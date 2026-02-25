@@ -165,6 +165,18 @@ class QQConfig(Base):
     allow_from: list[str] = Field(default_factory=list)  # Allowed user openids (empty = public access)
 
 
+class WebConfig(Base):
+    """Web channel configuration for HTTP API access."""
+
+    enabled: bool = False
+    host: str = "0.0.0.0"
+    port: int = 15600
+    api_key: str = ""  # Optional API key for authentication (X-API-Key header)
+    allow_from: list[str] = Field(default_factory=list)  # Allowed sender IDs (empty = public)
+    cors_origins: list[str] = Field(default_factory=list)  # CORS allowed origins
+    request_timeout: int = 120  # Max seconds to wait for agent response
+
+
 class ChannelsConfig(Base):
     """Configuration for chat channels."""
 
@@ -179,6 +191,7 @@ class ChannelsConfig(Base):
     email: EmailConfig = Field(default_factory=EmailConfig)
     slack: SlackConfig = Field(default_factory=SlackConfig)
     qq: QQConfig = Field(default_factory=QQConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
 
 
 class AgentDefaults(Base):
