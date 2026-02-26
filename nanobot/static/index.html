@@ -312,6 +312,16 @@
         const API_BASE = window.location.origin;
         let isLoading = false;
 
+        // Get or create unique chat_id for this browser
+        function getChatId() {
+            let chatId = localStorage.getItem('nanobot_chat_id');
+            if (!chatId) {
+                chatId = crypto.randomUUID();
+                localStorage.setItem('nanobot_chat_id', chatId);
+            }
+            return chatId;
+        }
+
         // Load API key from localStorage
         function loadApiKey() {
             const savedKey = localStorage.getItem('nanobot_api_key');
@@ -406,7 +416,7 @@
                     headers: headers,
                     body: JSON.stringify({
                         message: message,
-                        chat_id: 'default',
+                        chat_id: getChatId(),
                         sender_id: 'web_user'
                     })
                 });
