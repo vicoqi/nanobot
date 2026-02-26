@@ -163,6 +163,7 @@ Connect nanobot to your favorite chat platform.
 
 | Channel | What you need |
 |---------|---------------|
+| **Web** | Nothing! (built-in) |
 | **Telegram** | Bot token from @BotFather |
 | **Discord** | Bot token + Message Content intent |
 | **WhatsApp** | QR code scan |
@@ -561,6 +562,68 @@ Give nanobot its own email account. It polls **IMAP** for incoming mail and repl
 ```bash
 nanobot gateway
 ```
+
+</details>
+
+<details>
+<summary><b>Web (HTTP API + Chat UI)</b></summary>
+
+Built-in HTTP API with a web chat interface — no setup required!
+
+**1. Configure** (optional)
+
+```json
+{
+  "channels": {
+    "web": {
+      "enabled": true,
+      "host": "0.0.0.0",
+      "port": 15600,
+      "apiKey": "",
+      "corsOrigins": ["*"],
+      "requestTimeout": 120
+    }
+  }
+}
+```
+
+> - `apiKey`: Set to restrict API access. Clients must send `X-API-Key` header.
+> - `corsOrigins`: Allowed CORS origins. Use `["*"]` for development, or specify domains for production.
+
+**2. Run**
+
+```bash
+nanobot gateway
+```
+
+**3. Access**
+
+- **Chat UI**: Open `http://localhost:15600` in your browser
+- **API Endpoint**: `POST http://localhost:15600/chat`
+
+**API Usage:**
+
+```bash
+# Send a message
+curl -X POST http://localhost:15600/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello!", "chat_id": "default", "sender_id": "web_user"}'
+
+# With API key (if configured)
+curl -X POST http://localhost:15600/chat \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{"message": "Hello!"}'
+```
+
+**Endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Web chat UI |
+| `/chat` | POST | Send message, get response |
+| `/health` | GET | Health check |
+| `/status` | GET | Channel status |
 
 </details>
 

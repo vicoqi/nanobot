@@ -8,9 +8,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from loguru import logger
 from pydantic import BaseModel, Field
 import threading
@@ -152,6 +154,7 @@ class WebChannel(BaseChannel):
         app.post("/chat")(self._handle_chat)
         app.get("/health")(self._handle_health)
         app.get("/status")(self._handle_status)
+        app.get("/", response_class=HTMLResponse)(self._handle_ui)
 
         # Exception handler
         @app.exception_handler(Exception)
@@ -347,6 +350,19 @@ class WebChannel(BaseChannel):
                 "cors_enabled": bool(self.config.cors_origins),
             },
         }
+
+    async def _handle_ui(self) -> HTMLResponse:
+        """Serve the web chat UI."""
+        static_dir = Path(__file__).parent.parent / "static"
+        index_path = static_dir / "index.html"
+
+        if not index_path.exists():
+            return HTMLResponse(
+                content="<html><body><h1>Web UI not found</h1></body></html>",
+                status_code=404
+            )
+
+        return HTMLResponse(content=index_path.read_text())
 
     # ========================================================================
     # Background Tasks
