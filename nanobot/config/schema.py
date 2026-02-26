@@ -205,10 +205,21 @@ class AgentDefaults(Base):
     memory_window: int = 100
 
 
+class AgentDefinition(Base):
+    """Definition of a single agent instance."""
+
+    name: str  # Agent identifier
+    channels: list[str] = Field(default_factory=list)  # Bound channel names (e.g., ["telegram", "web"])
+    workspace: str | None = None  # Independent workspace (default: ~/.nanobot/agents/{name})
+    model: str | None = None  # Override default model
+    system_prompt_suffix: str = ""  # Text to append to system prompt
+
+
 class AgentsConfig(Base):
     """Agent configuration."""
 
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
+    definitions: list[AgentDefinition] = Field(default_factory=list)  # Multi-agent definitions
 
 
 class ProviderConfig(Base):
