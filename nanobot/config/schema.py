@@ -165,6 +165,18 @@ class QQConfig(Base):
     allow_from: list[str] = Field(default_factory=list)  # Allowed user openids (empty = public access)
 
 
+class WebConfig(Base):
+    """Web channel configuration for HTTP API access."""
+
+    enabled: bool = False
+    host: str = "0.0.0.0"
+    port: int = 15600
+    api_key: str = ""  # Optional API key for authentication (X-API-Key header)
+    allow_from: list[str] = Field(default_factory=list)  # Allowed sender IDs (empty = public)
+    cors_origins: list[str] = Field(default_factory=list)  # CORS allowed origins
+    request_timeout: int = 120  # Max seconds to wait for agent response
+
+
 class ChannelsConfig(Base):
     """Configuration for chat channels."""
 
@@ -179,6 +191,7 @@ class ChannelsConfig(Base):
     email: EmailConfig = Field(default_factory=EmailConfig)
     slack: SlackConfig = Field(default_factory=SlackConfig)
     qq: QQConfig = Field(default_factory=QQConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
 
 
 class AgentDefaults(Base):
@@ -192,10 +205,21 @@ class AgentDefaults(Base):
     memory_window: int = 100
 
 
+class AgentDefinition(Base):
+    """Definition of a single agent instance."""
+
+    name: str  # Agent identifier
+    channels: list[str] = Field(default_factory=list)  # Bound channel names (e.g., ["telegram", "web"])
+    workspace: str | None = None  # Independent workspace (default: ~/.nanobot/agents/{name})
+    model: str | None = None  # Override default model
+    system_prompt_suffix: str = ""  # Text to append to system prompt
+
+
 class AgentsConfig(Base):
     """Agent configuration."""
 
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
+    definitions: list[AgentDefinition] = Field(default_factory=list)  # Multi-agent definitions
 
 
 class ProviderConfig(Base):
@@ -228,11 +252,19 @@ class ProvidersConfig(Base):
     github_copilot: ProviderConfig = Field(default_factory=ProviderConfig)  # Github Copilot (OAuth)
 
 
+class HeartbeatConfig(Base):
+    """Heartbeat service configuration."""
+
+    enabled: bool = True
+    interval_s: int = 30 * 60  # 30 minutes
+
+
 class GatewayConfig(Base):
     """Gateway/server configuration."""
 
     host: str = "0.0.0.0"
     port: int = 18790
+    heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 
 class WebSearchConfig(Base):
