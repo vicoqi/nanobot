@@ -78,3 +78,19 @@ def cleanup_agent_files(agent: Agent) -> None:
     if workspace_path.exists():
         shutil.rmtree(workspace_path, ignore_errors=True)
         logger.info("Cleaned up workspace: {}", workspace_path)
+
+
+def update_agent_weixin_config(agent: Agent) -> None:
+    """Update agent config.json to enable weixin channel after QR binding."""
+    config_path = Path(agent.config_path)
+    if not config_path.exists():
+        logger.warning("Agent config not found: {}", config_path)
+        return
+
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    data.setdefault("channels", {}).setdefault("weixin", {}).update({
+        "enabled": True,
+        "token": agent.wechat_bot_token,
+    })
+    config_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.info("Updated agent config: weixin enabled for agent {}", agent.id)

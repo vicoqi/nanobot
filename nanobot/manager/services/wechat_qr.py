@@ -139,6 +139,11 @@ class WechatQRService:
                 if user_id:
                     await db.create_wechat_binding(agent_id, user_id)
 
+                # Update agent config.json to enable weixin channel
+                agent = await db.get_agent(agent_id)
+                from nanobot.manager.services.config_builder import update_agent_weixin_config
+                update_agent_weixin_config(agent)
+
                 logger.info("Agent {} WeChat bound: bot_id={}, user_id={}", agent_id, bot_id, user_id)
                 break
 

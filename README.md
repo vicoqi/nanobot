@@ -243,6 +243,88 @@ bun install
 bun run dev
 ```
 
+## 🤖 Multi-Agent Manager
+
+Multi-Agent Manager lets you create multiple independent nanobot agents through a Web UI, bind each agent to a WeChat account via QR code scanning, and chat with your agent directly in WeChat. An admin dashboard monitors all agents.
+
+> [!NOTE]
+> Multi-Agent Manager is available on the `feat/multi-agent-management` branch and requires a source install with the `[manager]` extra.
+
+**1. Install dependencies**
+
+```bash
+pip install -e ".[manager]"
+```
+
+**2. Create config** (`~/.nanobot/manager-config.json`)
+
+```json
+{
+  "manager": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "adminPassword": "your-admin-password"
+  },
+  "providers": {
+    "deepseek": {
+      "apiKey": "your-key"
+    }
+  },
+  "agentDefaults": {
+    "provider": "deepseek",
+    "model": "deepseek-chat"
+  },
+  "portRange": [19000, 19999]
+}
+```
+
+**3. Start the manager**
+
+```bash
+nanobot manager --config ~/.nanobot/manager-config.json
+```
+
+**4. (Optional) Start the frontend dev server**
+
+```bash
+cd webui-manager
+bun install
+bun run dev    # http://127.0.0.1:5175, proxies API to :8080
+```
+
+The built frontend is already bundled in `nanobot/manager/static/` and served automatically in production.
+
+**5. User flow**
+
+```
+Open http://your-server:8080
+  → Register account
+  → Create Agent (set name & personality/Soul)
+  → Start Agent
+  → Generate QR code → scan with WeChat
+  → Chat with your agent in WeChat
+```
+
+Each agent runs as an independent `nanobot gateway` subprocess with its own config, workspace, session history, and memory.
+
+**6. Admin dashboard**
+
+Visit `http://your-server:8080/admin` and enter the `adminPassword` to view all users, agents, and runtime stats.
+
+**7. Architecture**
+
+```
+Browser ←→ FastAPI Manager (:8080)
+                ├── SQLite (users, agents, bindings)
+                ├── Agent Process Manager
+                │     ├── agent-19000 (nanobot gateway)
+                │     ├── agent-19001 (nanobot gateway)
+                │     └── ...
+                └── WeChat QR Service
+                      ↕ ilinkai API
+                WeChat user ←→ Agent
+```
+
 ## 🏗️ Architecture
 
 <p align="center">

@@ -202,7 +202,7 @@ async def generate_qrcode(
         qr_code_status=QRCodeStatus.PENDING,
     )
     qr.spawn_poll_task(agent_id, db)
-    return {"qr_code_url": qr_code_url, "qr_code_id": qr_code_id}
+    return {"qrCodeUrl": qr_code_url, "qrCodeId": qr_code_id}
 
 
 @router.get("/{agent_id}/qrcode/status")
@@ -213,6 +213,6 @@ async def get_qrcode_status(
 ):
     agent = _check_owner(await db.get_agent(agent_id), _get_user_id(payload))
     return {
-        "qr_code_status": agent.qr_code_status,
-        "wechat_bound": agent.wechat_bound,
+        "qrCodeStatus": agent.qr_code_status,
+        "wechatBound": agent.wechat_bound,
     }

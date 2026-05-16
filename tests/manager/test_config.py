@@ -30,7 +30,7 @@ class TestManagerConfig:
     def test_defaults(self):
         cfg = ManagerConfig()
         assert cfg.port_range == [19000, 19999]
-        assert cfg.agent_defaults.model == "anthropic/claude-sonnet-4-6"
+        assert cfg.agent_defaults.model == "deepseek-chat"
 
     def test_camel_case_roundtrip(self):
         cfg = ManagerConfig(

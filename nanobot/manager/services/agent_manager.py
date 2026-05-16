@@ -6,6 +6,7 @@ import asyncio
 import os
 import signal
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -27,12 +28,16 @@ class AgentProcessManager:
             return await db.update_agent(agent.id, status=AgentStatus.ERROR)
 
         try:
+            log_dir = Path(agent.workspace_path) / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = open(log_dir / "gateway.log", "a", encoding="utf-8")
+
             process = await asyncio.create_subprocess_exec(
                 sys.executable, "-m", "nanobot", "gateway",
                 "--config", agent.config_path,
                 cwd=agent.workspace_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stdout=log_file,
+                stderr=log_file,
             )
             updated = await db.update_agent(agent.id, pid=process.pid, status=AgentStatus.RUNNING)
             logger.info("Agent {} started (pid={})", agent.name, process.pid)

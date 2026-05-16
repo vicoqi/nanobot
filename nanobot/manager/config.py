@@ -31,8 +31,8 @@ class ManagerServerConfig(Base):
 class AgentDefaultsConfig(Base):
     """Default agent settings inherited by all new agents."""
 
-    model: str = "anthropic/claude-sonnet-4-6"
-    provider: str = "auto"
+    model: str = "deepseek-chat"
+    provider: str = "deepseek"
     max_tokens: int = 8192
     context_window_tokens: int = 65536
 
