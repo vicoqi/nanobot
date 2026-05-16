@@ -10,27 +10,19 @@ This file documents non-obvious constraints and usage patterns.
 - Output is truncated at 10,000 characters
 - `restrictToWorkspace` config can limit file access to the workspace
 
-## Cron — Scheduled Reminders
+## grep — Content Search
 
-Use `exec` to create scheduled reminders:
+- Use `grep` to search file contents inside the workspace
+- Default behavior returns only matching file paths (`output_mode="files_with_matches"`)
+- Supports optional `glob` filtering (e.g. `glob="*.py"`) plus `context_before` / `context_after`
+- Supports `type="py"`, `type="ts"`, `type="md"` and similar shorthand filters
+- Use `fixed_strings=true` for literal keywords containing regex characters
+- Use `output_mode="files_with_matches"` to get only matching file paths
+- Use `output_mode="count"` to size a search before reading full matches
+- Use `head_limit` and `offset` to page across results
+- Prefer this over `exec` for code and history searches
+- Binary or oversized files may be skipped to keep results readable
 
-```bash
-# Recurring: every day at 9am
-nanobot cron add --name "morning" --message "Good morning!" --cron "0 9 * * *"
+## cron — Scheduled Reminders
 
-# With timezone (--tz only works with --cron)
-nanobot cron add --name "standup" --message "Standup time!" --cron "0 10 * * 1-5" --tz "Asia/Shanghai"
-
-# Recurring: every 2 hours
-nanobot cron add --name "water" --message "Drink water!" --every 7200
-
-# One-time: specific ISO time
-nanobot cron add --name "meeting" --message "Meeting starts now!" --at "2025-01-31T15:00:00"
-
-# Deliver to a specific channel/user
-nanobot cron add --name "reminder" --message "Check email" --at "2025-01-31T09:00:00" --deliver --to "USER_ID" --channel "CHANNEL"
-
-# Manage jobs
-nanobot cron list
-nanobot cron remove <job_id>
-```
+- Please refer to cron skill for usage.
