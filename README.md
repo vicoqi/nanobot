@@ -284,7 +284,9 @@ pip install -e ".[manager]"
 nanobot manager --config ~/.nanobot/manager-config.json
 ```
 
-**4. (Optional) Start the frontend dev server**
+**4. Start the frontend**
+
+Development mode (with hot reload):
 
 ```bash
 cd webui-manager
@@ -292,7 +294,15 @@ bun install
 bun run dev    # http://127.0.0.1:5175, proxies API to :8080
 ```
 
-The built frontend is already bundled in `nanobot/manager/static/` and served automatically in production.
+Production mode (build and serve from Manager):
+
+```bash
+cd webui-manager
+bun install
+bun run build  # outputs to nanobot/manager/static/
+```
+
+No separate frontend server needed — `nanobot manager` serves the built files at `http://your-server:8080` automatically.
 
 **5. User flow**
 

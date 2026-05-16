@@ -24,7 +24,10 @@ export default defineConfig(({ mode }) => {
       strictPort: true,
       proxy: {
         "/api": { target, changeOrigin: true },
-        "/admin": { target, changeOrigin: true },
+        "/admin/auth": { target, changeOrigin: true },
+        "/admin/agents": { target, changeOrigin: true },
+        "/admin/users": { target, changeOrigin: true },
+        "/admin/stats": { target, changeOrigin: true },
       },
     },
   };

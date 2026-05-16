@@ -8,14 +8,14 @@ import {
   type Agent,
   type AdminUser,
 } from "@/lib/api";
-import { setToken, clearToken, getToken } from "@/lib/auth";
+import { setAdminToken, clearAdminToken, isAdminLoggedIn } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import StatusBadge from "@/components/StatusBadge";
 
 export default function AdminPage() {
-  const [loggedIn, setLoggedIn] = useState(!!getToken());
+  const [loggedIn, setLoggedIn] = useState(isAdminLoggedIn());
   const [password, setPassword] = useState("");
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -26,7 +26,7 @@ export default function AdminPage() {
     e.preventDefault();
     try {
       const { token } = await adminLogin(password);
-      setToken(token);
+      setAdminToken(token);
       setLoggedIn(true);
     } catch (err: any) {
       alert(err.message);
@@ -74,7 +74,7 @@ export default function AdminPage() {
         <Button
           variant="outline"
           onClick={() => {
-            clearToken();
+            clearAdminToken();
             setLoggedIn(false);
           }}
         >

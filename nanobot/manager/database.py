@@ -105,7 +105,15 @@ class Database:
             "FROM users u LEFT JOIN agents a ON a.user_id = u.id "
             "GROUP BY u.id ORDER BY u.created_at DESC"
         )
-        return [dict(row) for row in await cursor.fetchall()]
+        return [
+            {
+                "id": row["id"],
+                "username": row["username"],
+                "agentCount": row["agent_count"],
+                "createdAt": row["created_at"],
+            }
+            for row in await cursor.fetchall()
+        ]
 
     # -- Agent CRUD --
 

@@ -144,6 +144,13 @@ class WechatQRService:
                 from nanobot.manager.services.config_builder import update_agent_weixin_config
                 update_agent_weixin_config(agent)
 
+                # Restart gateway so the weixin channel activates
+                if agent.pid:
+                    from nanobot.manager.app import get_process_manager
+                    pm = get_process_manager()
+                    await pm.stop_agent(agent, db)
+                    await pm.start_agent(agent, db)
+
                 logger.info("Agent {} WeChat bound: bot_id={}, user_id={}", agent_id, bot_id, user_id)
                 break
 
@@ -160,8 +167,13 @@ class WechatQRService:
                     await db.update_agent(agent_id, qr_code_status=QRCodeStatus.EXPIRED)
                     break
                 try:
-                    new_id, _ = await self.fetch_qr_code()
-                    await db.update_agent(agent_id, qr_code_id=new_id, qr_code_status=QRCodeStatus.PENDING)
+                    new_id, new_url = await self.fetch_qr_code()
+                    await db.update_agent(
+                        agent_id,
+                        qr_code_id=new_id,
+                        qr_code_url=new_url,
+                        qr_code_status=QRCodeStatus.PENDING,
+                    )
                     agent = await db.get_agent(agent_id)
                     poll_base_url = self.base_url
                 except Exception:

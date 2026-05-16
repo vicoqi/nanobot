@@ -1,9 +1,10 @@
-import { getToken, clearToken } from "./auth";
+import { getToken, clearToken, getAdminToken, clearAdminToken } from "./auth";
 
 const BASE = "";
 
 async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const token = getToken();
+  const isAdmin = path.startsWith("/admin");
+  const token = isAdmin ? getAdminToken() : getToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(opts.headers as Record<string, string>),
@@ -13,8 +14,12 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   }
   const res = await fetch(`${BASE}${path}`, { ...opts, headers });
   if (res.status === 401) {
-    clearToken();
-    window.location.href = "/login";
+    if (isAdmin) {
+      clearAdminToken();
+    } else {
+      clearToken();
+      window.location.href = "/login";
+    }
     throw new Error("Unauthorized");
   }
   if (!res.ok) {
