@@ -21,6 +21,7 @@ class QRCodeStatus(str, Enum):
     SCANNED = "scanned"
     CONFIRMED = "confirmed"
     EXPIRED = "expired"
+    SCAN_REDIRECT = "scaned_but_redirect"
 
 
 # -- Database models --

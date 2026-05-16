@@ -99,6 +99,14 @@ class Database:
         rows = await cursor.fetchall()
         return [self._row_to_user(row) for row in rows]
 
+    async def get_user_agent_counts(self) -> list[dict]:
+        cursor = await self.db.execute(
+            "SELECT u.id, u.username, u.created_at, COUNT(a.id) AS agent_count "
+            "FROM users u LEFT JOIN agents a ON a.user_id = u.id "
+            "GROUP BY u.id ORDER BY u.created_at DESC"
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     # -- Agent CRUD --
 
     async def create_agent(

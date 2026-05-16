@@ -622,6 +622,27 @@ def serve(
 
 
 # ============================================================================
+# Shared helpers
+# ============================================================================
+
+
+def _enable_verbose_logging() -> None:
+    logger.remove(_log_handler_id)
+    logger.add(
+        sys.stderr,
+        format=(
+            "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+            "<level>{level: <5}</level> | "
+            "<cyan>{extra[channel]}</cyan> | "
+            "<level>{message}</level>"
+        ),
+        level="DEBUG",
+        colorize=None,
+        filter=lambda record: record["extra"].setdefault("channel", "-") or True,
+    )
+
+
+# ============================================================================
 # Gateway / Server
 # ============================================================================
 
@@ -635,21 +656,43 @@ def gateway(
 ):
     """Start the nanobot gateway."""
     if verbose:
-        logger.remove(_log_handler_id)
-        logger.add(
-            sys.stderr,
-            format=(
-                "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-                "<level>{level: <5}</level> | "
-                "<cyan>{extra[channel]}</cyan> | "
-                "<level>{message}</level>"
-            ),
-            level="DEBUG",
-            colorize=None,
-            filter=lambda record: record["extra"].setdefault("channel", "-") or True,
-        )
+        _enable_verbose_logging()
     cfg = _load_runtime_config(config, workspace)
     _run_gateway(cfg, port=port)
+
+
+# ============================================================================
+# Agent Manager
+# ============================================================================
+
+
+@app.command()
+def manager(
+    config: str | None = typer.Option(None, "--config", "-c", help="Path to manager config file"),
+    host: str | None = typer.Option(None, "--host", "-h", help="Manager host"),
+    port: int | None = typer.Option(None, "--port", "-p", help="Manager port"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+):
+    """Start the nanobot agent manager server."""
+    import uvicorn
+
+    if verbose:
+        _enable_verbose_logging()
+
+    config_path = Path(config) if config else None
+
+    from nanobot.manager.app import create_app
+
+    app = create_app(config_path)
+
+    from nanobot.manager.app import _app_state
+
+    cfg = _app_state.config.manager
+    run_host = host or cfg.host
+    run_port = port or cfg.port
+
+    logger.info("Starting nanobot manager on {}:{}", run_host, run_port)
+    uvicorn.run(app, host=run_host, port=run_port, log_level="info")
 
 
 def _run_gateway(
