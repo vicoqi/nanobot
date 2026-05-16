@@ -71,6 +71,12 @@ class AgentProcessManager:
         logger.info("Agent {} stopped", agent.name)
         return updated
 
+    async def restart_agent(self, agent: Agent, db: Database) -> Agent | None:
+        """Stop and start an agent, used after config changes."""
+        await self.stop_agent(agent, db)
+        agent = await db.get_agent(agent.id)
+        return await self.start_agent(agent, db)
+
     def check_health(self, agent: Agent) -> bool:
         """Check if an agent process is alive."""
         return agent.pid is not None and self._is_alive(agent.pid)

@@ -113,3 +113,12 @@ class AdminStatsResponse(BaseModel):
     running_agents: int = 0
     stopped_agents: int = 0
     error_agents: int = 0
+
+
+class AdminUserResponse(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    id: int
+    username: str
+    agent_count: int = 0
+    created_at: str = ""

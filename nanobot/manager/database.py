@@ -9,7 +9,7 @@ from typing import Any
 import aiosqlite
 from loguru import logger
 
-from nanobot.manager.models import Agent, User, WechatBinding
+from nanobot.manager.models import Agent, AdminUserResponse, User, WechatBinding
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -105,14 +105,15 @@ class Database:
             "FROM users u LEFT JOIN agents a ON a.user_id = u.id "
             "GROUP BY u.id ORDER BY u.created_at DESC"
         )
+        rows = await cursor.fetchall()
         return [
-            {
-                "id": row["id"],
-                "username": row["username"],
-                "agentCount": row["agent_count"],
-                "createdAt": row["created_at"],
-            }
-            for row in await cursor.fetchall()
+            AdminUserResponse(
+                id=row["id"],
+                username=row["username"],
+                agent_count=row["agent_count"],
+                created_at=row["created_at"] or "",
+            ).model_dump(by_alias=True)
+            for row in rows
         ]
 
     # -- Agent CRUD --

@@ -36,6 +36,11 @@ class WechatQRService:
             task.cancel()
         await self._client.aclose()
 
+    @staticmethod
+    def _get_pm():
+        from nanobot.manager.app import get_process_manager
+        return get_process_manager()
+
     # -- HTTP helpers (mirrors WeixinChannel) --
 
     @staticmethod
@@ -146,10 +151,8 @@ class WechatQRService:
 
                 # Restart gateway so the weixin channel activates
                 if agent.pid:
-                    from nanobot.manager.app import get_process_manager
-                    pm = get_process_manager()
-                    await pm.stop_agent(agent, db)
-                    await pm.start_agent(agent, db)
+                    pm = self._get_pm()
+                    await pm.restart_agent(agent, db)
 
                 logger.info("Agent {} WeChat bound: bot_id={}, user_id={}", agent_id, bot_id, user_id)
                 break
@@ -174,7 +177,7 @@ class WechatQRService:
                         qr_code_url=new_url,
                         qr_code_status=QRCodeStatus.PENDING,
                     )
-                    agent = await db.get_agent(agent_id)
+                    agent.qr_code_id = new_id
                     poll_base_url = self.base_url
                 except Exception:
                     logger.exception("QR refresh failed for agent {}", agent_id)

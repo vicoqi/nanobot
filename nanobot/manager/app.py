@@ -8,7 +8,6 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from loguru import logger
 
@@ -87,14 +86,9 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     static_dir = Path(__file__).parent / "static"
     if static_dir.is_dir() and (static_dir / "index.html").exists():
         index_html = static_dir / "index.html"
-        assets_dir = static_dir / "assets"
-
-        @app.get("/assets/{path:path}")
-        async def serve_assets(path: str):
-            return FileResponse(assets_dir / path)
 
         @app.get("/{path:path}")
-        async def serve_spa(path: str, request: Request):
+        async def serve_spa(path: str):
             file = static_dir / path
             if path and file.is_file():
                 return FileResponse(file)
