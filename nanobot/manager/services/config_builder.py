@@ -24,12 +24,16 @@ def build_agent_config(manager_config: ManagerConfig, agent: Agent) -> dict:
                 "provider": defaults.provider,
                 "maxTokens": defaults.max_tokens,
                 "contextWindowTokens": defaults.context_window_tokens,
+                "timezone": "Asia/Shanghai",
             },
         },
         "providers": providers_data,
         "gateway": {
             "host": "127.0.0.1",
             "port": agent.gateway_port,
+        },
+        "tools": {
+            "restrictToWorkspace": True,
         },
         "channels": {
             "weixin": {
