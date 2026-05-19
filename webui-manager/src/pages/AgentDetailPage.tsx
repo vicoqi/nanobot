@@ -22,6 +22,9 @@ export default function AgentDetailPage() {
   const [name, setName] = useState("");
   const [soul, setSoul] = useState("");
   const [qrUrl, setQrUrl] = useState("");
+  const [language, setLanguage] = useState("zh");
+  const [city, setCity] = useState("Shanghai");
+  const [gender, setGender] = useState("female");
   const [polling, setPolling] = useState(false);
   const [saving, setSaving] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -33,6 +36,9 @@ export default function AgentDetailPage() {
       setAgent(a);
       setName(a.name);
       setSoul(a.soul);
+      setLanguage(a.language);
+      setCity(a.city);
+      setGender(a.gender);
     } catch {
       navigate("/dashboard");
     }
@@ -49,7 +55,7 @@ export default function AgentDetailPage() {
     if (!id) return;
     setSaving(true);
     try {
-      await updateAgent(Number(id), { name, soul });
+      await updateAgent(Number(id), { name, soul, language, city, gender });
       await fetchAgent();
     } catch (err: any) {
       alert(err.message);
@@ -119,6 +125,34 @@ export default function AgentDetailPage() {
         <div>
           <label className="text-sm font-medium">Name</label>
           <Input value={name} onChange={(e) => setName(e.target.value)} className="mt-1" />
+        </div>
+        <div className="grid grid-cols-3 gap-4">
+          <div>
+            <label className="text-sm font-medium">Language</label>
+            <select
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              className="mt-1 w-full rounded-md border px-3 py-2 text-sm"
+            >
+              <option value="zh">中文</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-sm font-medium">City</label>
+            <Input value={city} onChange={(e) => setCity(e.target.value)} className="mt-1" />
+          </div>
+          <div>
+            <label className="text-sm font-medium">Gender</label>
+            <select
+              value={gender}
+              onChange={(e) => setGender(e.target.value)}
+              className="mt-1 w-full rounded-md border px-3 py-2 text-sm"
+            >
+              <option value="female">女性</option>
+              <option value="male">男性</option>
+            </select>
+          </div>
         </div>
         <div>
           <label className="text-sm font-medium">Personality / SOUL</label>

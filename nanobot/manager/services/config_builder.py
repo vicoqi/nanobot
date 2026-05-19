@@ -11,6 +11,22 @@ from nanobot.manager.config import ManagerConfig
 from nanobot.manager.models import Agent
 
 
+def build_soul_md(agent: Agent) -> str:
+    """Build SOUL.md content with profile info and user-defined personality."""
+    gender_map = {"female": "女性", "male": "男性"}
+    lang_map = {"zh": "中文", "en": "English"}
+    gender = gender_map.get(agent.gender, agent.gender)
+    lang = lang_map.get(agent.language, agent.language)
+
+    lines = [f"# {agent.name}", ""]
+    lines.append(f"你是{agent.name}，{gender}，说{lang}，生活在{agent.city}。")
+    if agent.soul:
+        lines.append("")
+        lines.append(agent.soul)
+    lines.append("")
+    return "\n".join(lines)
+
+
 def build_agent_config(manager_config: ManagerConfig, agent: Agent) -> dict:
     """Build a nanobot-compatible config dict for an agent worker process."""
     defaults = manager_config.agent_defaults
@@ -63,7 +79,7 @@ def write_agent_files(agent: Agent, config: dict) -> None:
 
     # SOUL.md
     soul_path = workspace_path / "SOUL.md"
-    soul_path.write_text(agent.soul or f"# {agent.name}\n", encoding="utf-8")
+    soul_path.write_text(build_soul_md(agent), encoding="utf-8")
 
     logger.info("Agent files written: config={}, workspace={}", config_path, workspace_path)
 

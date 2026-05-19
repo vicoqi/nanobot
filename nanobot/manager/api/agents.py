@@ -69,6 +69,9 @@ async def create_agent(
         user_id=user_id,
         name=req.name,
         soul=req.soul,
+        language=req.language,
+        city=req.city,
+        gender=req.gender,
         config_path=f"{agent_dir}/config.json",
         workspace_path=workspace_dir,
         gateway_port=port,
@@ -106,12 +109,20 @@ async def update_agent(
         updates["name"] = req.name
     if req.soul is not None:
         updates["soul"] = req.soul
-        # Regenerate SOUL.md
-        soul_path = Path(agent.workspace_path) / "SOUL.md"
-        soul_path.write_text(req.soul, encoding="utf-8")
+    if req.language is not None:
+        updates["language"] = req.language
+    if req.city is not None:
+        updates["city"] = req.city
+    if req.gender is not None:
+        updates["gender"] = req.gender
 
     if updates:
         await db.update_agent(agent_id, **updates)
+        # Regenerate SOUL.md with updated profile
+        updated = await db.get_agent(agent_id)
+        from nanobot.manager.services.config_builder import build_soul_md
+        soul_path = Path(updated.workspace_path) / "SOUL.md"
+        soul_path.write_text(build_soul_md(updated), encoding="utf-8")
     return await db.get_agent(agent_id)
 
 

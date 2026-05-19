@@ -74,6 +74,9 @@ export interface Agent {
   qrCodeStatus: string;
   wechatBotId: string;
   wechatBotToken: string;
+  language: string;
+  city: string;
+  gender: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -91,10 +94,16 @@ export async function listAgents(): Promise<Agent[]> {
   return request("/api/agents");
 }
 
-export async function createAgent(name: string, soul: string): Promise<Agent> {
+export async function createAgent(
+  name: string,
+  soul: string,
+  language = "zh",
+  city = "Shanghai",
+  gender = "female"
+): Promise<Agent> {
   return request("/api/agents", {
     method: "POST",
-    body: JSON.stringify({ name, soul }),
+    body: JSON.stringify({ name, soul, language, city, gender }),
   });
 }
 
@@ -102,7 +111,10 @@ export async function getAgent(id: number): Promise<Agent> {
   return request(`/api/agents/${id}`);
 }
 
-export async function updateAgent(id: number, data: { name?: string; soul?: string }): Promise<Agent> {
+export async function updateAgent(
+  id: number,
+  data: { name?: string; soul?: string; language?: string; city?: string; gender?: string }
+): Promise<Agent> {
   return request(`/api/agents/${id}`, {
     method: "PUT",
     body: JSON.stringify(data),

@@ -21,6 +21,9 @@ export default function DashboardPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
   const [soul, setSoul] = useState("");
+  const [language, setLanguage] = useState("zh");
+  const [city, setCity] = useState("Shanghai");
+  const [gender, setGender] = useState("female");
   const [loading, setLoading] = useState(false);
 
   const fetchAgents = useCallback(async () => {
@@ -38,10 +41,13 @@ export default function DashboardPage() {
   async function handleCreate() {
     setLoading(true);
     try {
-      await createAgent(name, soul);
+      await createAgent(name, soul, language, city, gender);
       setShowCreate(false);
       setName("");
       setSoul("");
+      setLanguage("zh");
+      setCity("Shanghai");
+      setGender("female");
       await fetchAgents();
     } catch (err: any) {
       alert(err.message);
@@ -87,6 +93,25 @@ export default function DashboardPage() {
               </DialogHeader>
               <div className="space-y-4 pt-2">
                 <Input placeholder="Agent name" value={name} onChange={(e) => setName(e.target.value)} />
+                <div className="grid grid-cols-3 gap-3">
+                  <select
+                    value={language}
+                    onChange={(e) => setLanguage(e.target.value)}
+                    className="rounded-md border px-3 py-2 text-sm"
+                  >
+                    <option value="zh">中文</option>
+                    <option value="en">English</option>
+                  </select>
+                  <Input placeholder="City" value={city} onChange={(e) => setCity(e.target.value)} />
+                  <select
+                    value={gender}
+                    onChange={(e) => setGender(e.target.value)}
+                    className="rounded-md border px-3 py-2 text-sm"
+                  >
+                    <option value="female">女性</option>
+                    <option value="male">男性</option>
+                  </select>
+                </div>
                 <Textarea
                   placeholder="Agent personality / SOUL (optional)"
                   value={soul}

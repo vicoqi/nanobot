@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS agents (
     qr_code_status TEXT DEFAULT '',
     wechat_bot_id TEXT DEFAULT '',
     wechat_bot_token TEXT DEFAULT '',
+    language TEXT NOT NULL DEFAULT 'zh',
+    city TEXT NOT NULL DEFAULT 'Shanghai',
+    gender TEXT NOT NULL DEFAULT 'female',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -61,6 +64,12 @@ class Database:
         self._db = await aiosqlite.connect(str(self.db_path))
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(_SCHEMA)
+        # Add new columns to existing databases
+        for col, default in [("language", "'zh'"), ("city", "'Shanghai'"), ("gender", "'female'")]:
+            try:
+                await self._db.execute(f"ALTER TABLE agents ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}")
+            except aiosqlite.OperationalError:
+                pass  # column already exists
         await self._db.commit()
         logger.info("Manager database initialized at {}", self.db_path)
 
@@ -126,11 +135,14 @@ class Database:
         config_path: str = "",
         workspace_path: str = "",
         gateway_port: int = 0,
+        language: str = "zh",
+        city: str = "Shanghai",
+        gender: str = "female",
     ) -> Agent:
         cursor = await self.db.execute(
-            "INSERT INTO agents (user_id, name, soul, config_path, workspace_path, gateway_port) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, name, soul, config_path, workspace_path, gateway_port),
+            "INSERT INTO agents (user_id, name, soul, config_path, workspace_path, gateway_port, language, city, gender) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, name, soul, config_path, workspace_path, gateway_port, language, city, gender),
         )
         await self.db.commit()
         return Agent(
@@ -141,6 +153,9 @@ class Database:
             config_path=config_path,
             workspace_path=workspace_path,
             gateway_port=gateway_port,
+            language=language,
+            city=city,
+            gender=gender,
         )
 
     async def get_agent(self, agent_id: int) -> Agent | None:
@@ -239,6 +254,9 @@ class Database:
             qr_code_status=row["qr_code_status"],
             wechat_bot_id=row["wechat_bot_id"],
             wechat_bot_token=row["wechat_bot_token"],
+            language=row["language"],
+            city=row["city"],
+            gender=row["gender"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

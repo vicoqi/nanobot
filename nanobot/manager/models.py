@@ -54,6 +54,9 @@ class Agent(BaseModel):
     qr_code_status: str = ""
     wechat_bot_id: str = ""
     wechat_bot_token: str = ""
+    language: str = "zh"
+    city: str = "Shanghai"
+    gender: str = "female"
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -87,11 +90,17 @@ class TokenResponse(BaseModel):
 class CreateAgentRequest(BaseModel):
     name: str
     soul: str = ""
+    language: str = "zh"
+    city: str = "Shanghai"
+    gender: str = "female"
 
 
 class UpdateAgentRequest(BaseModel):
     name: str | None = None
     soul: str | None = None
+    language: str | None = None
+    city: str | None = None
+    gender: str | None = None
 
 
 class AgentStatusResponse(BaseModel):
