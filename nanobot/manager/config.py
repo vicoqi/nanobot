@@ -37,6 +37,20 @@ class AgentDefaultsConfig(Base):
     context_window_tokens: int = 65536
 
 
+class ManagerImageGenerationConfig(Base):
+    """Image generation configuration inherited by all agents."""
+
+    enabled: bool = False
+    provider: str = "openrouter"
+    model: str = "openai/gpt-5.4-image-2"
+
+
+class ManagerToolsConfig(Base):
+    """Tool configuration inherited by all agents."""
+
+    image_generation: ManagerImageGenerationConfig = ManagerImageGenerationConfig()
+
+
 class ManagerConfig(Base):
     """Root configuration for the agent manager."""
 
@@ -44,6 +58,7 @@ class ManagerConfig(Base):
     providers: ProvidersConfig = ProvidersConfig()
     agent_defaults: AgentDefaultsConfig = AgentDefaultsConfig()
     port_range: list[int] = [19000, 19999]
+    tools: ManagerToolsConfig = ManagerToolsConfig()
 
     @property
     def data_dir(self) -> Path:

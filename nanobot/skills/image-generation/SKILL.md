@@ -88,6 +88,26 @@ AIHubMix `gpt-image-2-free` uses AIHubMix's unified predictions endpoint interna
 
 `providers.aihubmix.extraBody` can be used for provider-specific options. For example, `"extraBody": {"quality": "low"}` is optional but can make `gpt-image-2-free` faster and less likely to time out.
 
+For openai-images, the image tool uses the standard OpenAI Images API (`/images/generations`). It shares the `providers.openai` config, so the same API key works for both LLM chat and image generation. Set `apiBase` to point at any Images API compatible endpoint:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "apiKey": "sk-...",
+      "apiBase": "https://api.openai.com/v1"
+    }
+  },
+  "tools": {
+    "imageGeneration": {
+      "enabled": true,
+      "provider": "openai-images",
+      "model": "gpt-image-1"
+    }
+  }
+}
+```
+
 ## Examples
 
 Generate a new image:

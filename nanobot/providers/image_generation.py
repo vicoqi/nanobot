@@ -19,7 +19,7 @@ _OPENROUTER_ATTRIBUTION_HEADERS = {
 }
 _DEFAULT_TIMEOUT_S = 120.0
 _AIHUBMIX_TIMEOUT_S = 300.0
-_AIHUBMIX_ASPECT_RATIO_SIZES = {
+_ASPECT_RATIO_SIZES = {
     "1:1": "1024x1024",
     "3:4": "1024x1536",
     "9:16": "1024x1536",
@@ -65,19 +65,17 @@ def _b64_png_data_url(value: str) -> str:
     return f"data:image/png;base64,{value}"
 
 
-def _aihubmix_size(aspect_ratio: str | None, image_size: str | None) -> str:
-    """Return an OpenAI Images API size string for AIHubMix.
-
-    The WebUI emits compact size hints like ``1K`` for OpenRouter. AIHubMix's
-    Images API expects OpenAI-style dimensions or ``auto``, so only pass
-    through explicit dimension strings and otherwise derive the closest
-    supported orientation from aspect ratio.
-    """
+def _resolve_size(
+    aspect_ratio: str | None,
+    image_size: str | None,
+    fallback: str = "auto",
+) -> str | None:
+    """Map aspect ratio and size hints to an Images API size string."""
     if image_size and "x" in image_size.lower():
         return image_size
-    if aspect_ratio in _AIHUBMIX_ASPECT_RATIO_SIZES:
-        return _AIHUBMIX_ASPECT_RATIO_SIZES[aspect_ratio]
-    return "auto"
+    if aspect_ratio in _ASPECT_RATIO_SIZES:
+        return _ASPECT_RATIO_SIZES[aspect_ratio]
+    return fallback
 
 
 def _aihubmix_model_path(model: str) -> str:
@@ -264,7 +262,7 @@ class AIHubMixImageGenerationClient:
             "Authorization": f"Bearer {self.api_key}",
             **self.extra_headers,
         }
-        size = _aihubmix_size(aspect_ratio, image_size)
+        size = _resolve_size(aspect_ratio, image_size)
 
         if self._client is not None:
             return await self._generate_with_client(
@@ -393,3 +391,110 @@ async def _aihubmix_images_from_payload(
     for candidate in candidates:
         await collect(candidate)
     return images
+
+
+class OpenAIImagesClient:
+    """Standard OpenAI Images API client (POST /images/generations)."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None,
+        api_base: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+        extra_body: dict[str, Any] | None = None,
+        timeout: float = _DEFAULT_TIMEOUT_S,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self.api_key = api_key
+        self.api_base = _provider_base_url(
+            "openai",
+            api_base,
+            "https://api.openai.com/v1",
+        )
+        self.extra_headers = extra_headers or {}
+        self.extra_body = extra_body or {}
+        self.timeout = timeout
+        self._client = client
+
+    async def generate(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        reference_images: list[str] | None = None,
+        aspect_ratio: str | None = None,
+        image_size: str | None = None,
+    ) -> GeneratedImageResponse:
+        if not self.api_key:
+            raise ImageGenerationError(
+                "API key is not configured for the openai-images provider."
+            )
+
+        body: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "n": 1,
+            "response_format": "b64_json",
+        }
+        size = _resolve_size(aspect_ratio, image_size, fallback=None)
+        if size:
+            body["size"] = size
+        body.update(self.extra_body)
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            **self.extra_headers,
+        }
+        url = f"{self.api_base}/images/generations"
+
+        if self._client is not None:
+            response = await self._client.post(url, headers=headers, json=body)
+            data = response.json()
+        else:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(url, headers=headers, json=body)
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    detail = response.text[:500]
+                    raise ImageGenerationError(f"Image generation failed: {detail}") from exc
+                data = response.json()
+                images = await _parse_images(client, data)
+                return _build_response(images, data)
+
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = response.text[:500]
+            raise ImageGenerationError(f"Image generation failed: {detail}") from exc
+
+        images = await _parse_images(self._client, data)  # type: ignore[arg-type]
+        return _build_response(images, data)
+
+
+async def _parse_images(client: httpx.AsyncClient, data: dict[str, Any]) -> list[str]:
+    """Extract image data URLs from an Images API response."""
+    images: list[str] = []
+    for item in data.get("data") or []:
+        if not isinstance(item, dict):
+            continue
+        b64 = item.get("b64_json")
+        if isinstance(b64, str) and b64:
+            images.append(_b64_png_data_url(b64))
+            continue
+        image_url = item.get("url")
+        if isinstance(image_url, str) and image_url:
+            images.append(await _download_image_data_url(client, image_url))
+    return images
+
+
+def _build_response(images: list[str], data: dict[str, Any]) -> GeneratedImageResponse:
+    """Build response or raise error if no images were extracted."""
+    if not images:
+        provider_error = data.get("error") if isinstance(data, dict) else None
+        if provider_error:
+            raise ImageGenerationError(f"Image generation returned no images: {provider_error}")
+        raise ImageGenerationError("Image generation returned no images")
+    return GeneratedImageResponse(images=images, content="", raw=data)

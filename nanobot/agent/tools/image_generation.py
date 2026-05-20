@@ -19,6 +19,7 @@ from nanobot.config.schema import Base
 from nanobot.providers.image_generation import (
     AIHubMixImageGenerationClient,
     ImageGenerationError,
+    OpenAIImagesClient,
     OpenRouterImageGenerationClient,
 )
 from nanobot.utils.artifacts import (
@@ -30,6 +31,18 @@ from nanobot.utils.helpers import detect_image_mime
 
 if TYPE_CHECKING:
     from nanobot.config.schema import ProviderConfig
+
+_PROVIDER_CLIENTS: dict[str, type] = {
+    "openrouter": OpenRouterImageGenerationClient,
+    "aihubmix": AIHubMixImageGenerationClient,
+    "openai-images": OpenAIImagesClient,
+}
+
+_PROVIDER_KEY_HINTS: dict[str, str] = {
+    "openrouter": "providers.openrouter.apiKey",
+    "aihubmix": "providers.aihubmix.apiKey",
+    "openai-images": "providers.openai.apiKey",
+}
 
 
 class ImageGenerationToolConfig(Base):
@@ -117,7 +130,7 @@ class ImageGenerationTool(Tool):
     def _provider_config(self) -> ProviderConfig | None:
         return self.provider_configs.get(self.config.provider)
 
-    def _provider_client(self) -> OpenRouterImageGenerationClient | AIHubMixImageGenerationClient | None:
+    def _provider_client(self):
         provider = self._provider_config()
         kwargs = {
             "api_key": provider.api_key if provider else None,
@@ -125,18 +138,14 @@ class ImageGenerationTool(Tool):
             "extra_headers": provider.extra_headers if provider else None,
             "extra_body": provider.extra_body if provider else None,
         }
-        if self.config.provider == "openrouter":
-            return OpenRouterImageGenerationClient(**kwargs)
-        if self.config.provider == "aihubmix":
-            return AIHubMixImageGenerationClient(**kwargs)
-        return None
+        cls = _PROVIDER_CLIENTS.get(self.config.provider)
+        return cls(**kwargs) if cls else None
 
     def _missing_api_key_error(self) -> str:
         provider = self.config.provider
-        if provider == "openrouter":
-            return "Error: OpenRouter API key is not configured. Set providers.openrouter.apiKey."
-        if provider == "aihubmix":
-            return "Error: AIHubMix API key is not configured. Set providers.aihubmix.apiKey."
+        key_hint = _PROVIDER_KEY_HINTS.get(provider)
+        if key_hint:
+            return f"Error: {provider} API key is not configured. Set {key_hint}."
         return f"Error: {provider} API key is not configured."
 
     def _resolve_reference_image(self, value: str) -> str:

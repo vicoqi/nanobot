@@ -31,6 +31,7 @@ def build_agent_config(manager_config: ManagerConfig, agent: Agent) -> dict:
     """Build a nanobot-compatible config dict for an agent worker process."""
     defaults = manager_config.agent_defaults
     providers_data = manager_config.providers.model_dump(mode="json", by_alias=True, exclude_none=True)
+    tools_config = manager_config.tools
 
     return {
         "agents": {
@@ -50,6 +51,11 @@ def build_agent_config(manager_config: ManagerConfig, agent: Agent) -> dict:
         },
         "tools": {
             "restrictToWorkspace": True,
+            "imageGeneration": {
+                "enabled": tools_config.image_generation.enabled,
+                "provider": tools_config.image_generation.provider,
+                "model": tools_config.image_generation.model,
+            },
         },
         "channels": {
             "weixin": {
