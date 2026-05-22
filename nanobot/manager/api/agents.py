@@ -5,7 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, ConfigDict
+from pydantic.alias_generators import to_camel
 
+from nanobot.manager.app import (
+    get_config,
+    get_db,
+    get_process_manager,
+    get_qr_service,
+)
 from nanobot.manager.auth import get_current_user
 from nanobot.manager.database import Database
 from nanobot.manager.models import (
@@ -22,13 +30,13 @@ from nanobot.manager.services.config_builder import (
     cleanup_agent_files,
     write_agent_files,
 )
-from nanobot.manager.services.wechat_qr import WechatQRService
-from nanobot.manager.app import (
-    get_config,
-    get_db,
-    get_process_manager,
-    get_qr_service,
+from nanobot.manager.services.skills import (
+    get_installed_skill_names,
+    install_skill,
+    scan_available_skills,
+    uninstall_skill,
 )
+from nanobot.manager.services.wechat_qr import WechatQRService
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -43,6 +51,12 @@ def _check_owner(agent: Agent | None, user_id: int) -> Agent:
     if agent.user_id != user_id:
         raise HTTPException(status_code=403, detail="Not your agent")
     return agent
+
+
+class SkillActionRequest(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    skill_name: str
 
 
 @router.get("")
@@ -227,3 +241,62 @@ async def get_qrcode_status(
         "qrCodeStatus": agent.qr_code_status,
         "wechatBound": agent.wechat_bound,
     }
+
+
+@router.get("/{agent_id}/skills/available")
+async def list_available_skills(
+    agent_id: int,
+    payload: dict = Depends(get_current_user),
+    db: Database = Depends(get_db),
+):
+    agent = _check_owner(await db.get_agent(agent_id), _get_user_id(payload))
+    available = scan_available_skills()
+    installed = get_installed_skill_names(agent.workspace_path)
+    return {
+        "skills": [
+            {**s, "installed": s["name"] in installed}
+            for s in available
+        ],
+    }
+
+
+@router.post("/{agent_id}/skills/install")
+async def install_skill_endpoint(
+    agent_id: int,
+    req: SkillActionRequest,
+    payload: dict = Depends(get_current_user),
+    db: Database = Depends(get_db),
+    pm: AgentProcessManager = Depends(get_process_manager),
+):
+    agent = _check_owner(await db.get_agent(agent_id), _get_user_id(payload))
+    try:
+        install_skill(req.skill_name, agent.workspace_path)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except FileExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    was_running = agent.status == AgentStatus.RUNNING
+    if was_running:
+        await pm.restart_agent(agent, db)
+
+    return {
+        "success": True,
+        "message": "Skill installed" + (" and agent restarted" if was_running else ""),
+    }
+
+
+@router.post("/{agent_id}/skills/uninstall")
+async def uninstall_skill_endpoint(
+    agent_id: int,
+    req: SkillActionRequest,
+    payload: dict = Depends(get_current_user),
+    db: Database = Depends(get_db),
+):
+    agent = _check_owner(await db.get_agent(agent_id), _get_user_id(payload))
+    try:
+        uninstall_skill(req.skill_name, agent.workspace_path)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    return {"success": True, "message": "Skill uninstalled"}
