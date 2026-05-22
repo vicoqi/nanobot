@@ -206,7 +206,8 @@ export default function AgentDetailPage() {
       </div>
 
       {/* Right content area */}
-      <div className="flex-1 overflow-auto p-6">
+      <div className="flex-1 overflow-auto">
+        <div className="mx-auto max-w-4xl p-6">
         {activeTab === "settings" && (
           <>
             <h1 className="text-2xl font-bold mb-6">Agent Settings</h1>
@@ -344,6 +345,7 @@ export default function AgentDetailPage() {
             )}
           </>
         )}
+        </div>
       </div>
     </div>
   );
