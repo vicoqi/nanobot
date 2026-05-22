@@ -63,7 +63,7 @@ class ManagerConfig(Base):
     @property
     def data_dir(self) -> Path:
         """Manager data directory derived from config file location."""
-        return self._config_path.parent if self._config_path else Path.home() / ".nanobot-manager"
+        return self._config_path.parent if self._config_path else Path.home() / ".nanobot"
 
     @property
     def db_path(self) -> Path:
@@ -82,7 +82,7 @@ class ManagerConfig(Base):
         self._config_path: Path | None = None
 
 
-_DEFAULT_CONFIG_PATH = Path.home() / ".nanobot-manager" / "manager-config.json"
+_DEFAULT_CONFIG_PATH = Path.home() / ".nanobot" / "manager-config.json"
 
 
 def load_manager_config(config_path: Path | None = None) -> ManagerConfig:
