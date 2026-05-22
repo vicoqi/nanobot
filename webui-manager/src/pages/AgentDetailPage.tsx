@@ -7,7 +7,12 @@ import {
   stopAgent,
   generateQRCode,
   getQRCodeStatus,
+  getAvailableSkills,
+  installSkill,
+  uninstallSkill,
+  getAgentStatus,
   type Agent,
+  type AvailableSkill,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,10 +20,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { QRCodeSVG } from "qrcode.react";
 
+type TabKey = "settings" | "skills";
+
 export default function AgentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [agent, setAgent] = useState<Agent | null>(null);
+  const [activeTab, setActiveTab] = useState<TabKey>("settings");
   const [name, setName] = useState("");
   const [soul, setSoul] = useState("");
   const [qrUrl, setQrUrl] = useState("");
@@ -27,6 +35,8 @@ export default function AgentDetailPage() {
   const [gender, setGender] = useState("female");
   const [polling, setPolling] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [skills, setSkills] = useState<AvailableSkill[]>([]);
+  const [installingSkills, setInstallingSkills] = useState<Set<string>>(new Set());
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchAgent = useCallback(async () => {
@@ -44,12 +54,28 @@ export default function AgentDetailPage() {
     }
   }, [id, navigate]);
 
+  const fetchSkills = useCallback(async () => {
+    if (!id) return;
+    try {
+      const res = await getAvailableSkills(Number(id));
+      setSkills(res.skills);
+    } catch {
+      // ignore — skills list is non-critical
+    }
+  }, [id]);
+
   useEffect(() => {
     fetchAgent();
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, [fetchAgent]);
+
+  useEffect(() => {
+    if (activeTab === "skills") {
+      fetchSkills();
+    }
+  }, [activeTab, fetchSkills]);
 
   async function handleSave() {
     if (!id) return;
@@ -111,93 +137,213 @@ export default function AgentDetailPage() {
     }
   }
 
+  async function handleInstallSkill(skillName: string) {
+    if (!id) return;
+    setInstallingSkills((prev) => new Set(prev).add(skillName));
+    try {
+      await installSkill(Number(id), skillName);
+      // Poll until agent is running again (max 30s)
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2000));
+        try {
+          const s = await getAgentStatus(Number(id));
+          if (s.status === "running") break;
+        } catch {
+          break;
+        }
+      }
+    } catch (err: any) {
+      alert(err.message);
+    }
+    setInstallingSkills((prev) => {
+      const next = new Set(prev);
+      next.delete(skillName);
+      return next;
+    });
+    await fetchSkills();
+    await fetchAgent();
+  }
+
+  async function handleUninstallSkill(skillName: string) {
+    if (!id) return;
+    try {
+      await uninstallSkill(Number(id), skillName);
+    } catch (err: any) {
+      alert(err.message);
+    }
+    await fetchSkills();
+  }
+
   if (!agent) return <div className="p-6 text-center text-muted-foreground">Loading...</div>;
 
+  const tabs: { key: TabKey; label: string; icon: string }[] = [
+    { key: "settings", label: "设置", icon: "⚙️" },
+    { key: "skills", label: "Skills", icon: "📦" },
+  ];
+
   return (
-    <div className="mx-auto max-w-2xl p-6">
-      <Button variant="ghost" onClick={() => navigate("/dashboard")} className="mb-4">
-        &larr; Back
-      </Button>
-
-      <h1 className="text-2xl font-bold mb-6">Agent Settings</h1>
-
-      <div className="space-y-4">
-        <div>
-          <label className="text-sm font-medium">Name</label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} className="mt-1" />
-        </div>
-        <div className="grid grid-cols-3 gap-4">
-          <div>
-            <label className="text-sm font-medium">Language</label>
-            <select
-              value={language}
-              onChange={(e) => setLanguage(e.target.value)}
-              className="mt-1 w-full rounded-md border px-3 py-2 text-sm"
-            >
-              <option value="zh">中文</option>
-              <option value="en">English</option>
-            </select>
-          </div>
-          <div>
-            <label className="text-sm font-medium">City</label>
-            <Input value={city} onChange={(e) => setCity(e.target.value)} className="mt-1" />
-          </div>
-          <div>
-            <label className="text-sm font-medium">Gender</label>
-            <select
-              value={gender}
-              onChange={(e) => setGender(e.target.value)}
-              className="mt-1 w-full rounded-md border px-3 py-2 text-sm"
-            >
-              <option value="female">女性</option>
-              <option value="male">男性</option>
-            </select>
-          </div>
-        </div>
-        <div>
-          <label className="text-sm font-medium">Personality / SOUL</label>
-          <Textarea value={soul} onChange={(e) => setSoul(e.target.value)} rows={5} className="mt-1" />
-        </div>
-        <div className="flex gap-2">
-          <Button onClick={handleSave} disabled={saving}>
-            Save Changes
-          </Button>
-          <Button variant="outline" onClick={handleToggle}>
-            {agent.status === "running" ? "Stop Agent" : "Start Agent"}
-          </Button>
-        </div>
+    <div className="flex h-screen">
+      {/* Left sidebar */}
+      <div className="w-40 border-r bg-muted/30 flex flex-col pt-6">
+        <Button variant="ghost" onClick={() => navigate("/dashboard")} className="mb-6 mx-2 justify-start text-sm">
+          &larr; Back
+        </Button>
+        {tabs.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`flex items-center gap-2 px-4 py-3 text-sm text-left transition-colors ${
+              activeTab === tab.key
+                ? "bg-primary text-primary-foreground font-medium"
+                : "hover:bg-muted text-muted-foreground"
+            }`}
+          >
+            <span>{tab.icon}</span>
+            <span>{tab.label}</span>
+          </button>
+        ))}
       </div>
 
-      <Separator className="my-6" />
-
-      <h2 className="text-lg font-semibold mb-4">WeChat Binding</h2>
-      {agent.wechatBound ? (
-        <p className="text-green-700">WeChat is bound to this agent.</p>
-      ) : (
-        <div className="space-y-4">
-          <Button onClick={handleQRCode} disabled={agent.status !== "running" || polling}>
-            {agent.status !== "running" ? "Start agent first to bind WeChat" : polling ? "Waiting for scan..." : "Generate QR Code"}
-          </Button>
-          {qrUrl && (
-            <div className="space-y-2">
-              <div className="inline-block rounded-lg border p-4 bg-white">
-                <QRCodeSVG value={qrUrl} size={200} />
+      {/* Right content area */}
+      <div className="flex-1 overflow-auto p-6">
+        {activeTab === "settings" && (
+          <>
+            <h1 className="text-2xl font-bold mb-6">Agent Settings</h1>
+            <div className="max-w-2xl space-y-4">
+              <div>
+                <label className="text-sm font-medium">Name</label>
+                <Input value={name} onChange={(e) => setName(e.target.value)} className="mt-1" />
               </div>
-              {polling && (
-                <p className="text-sm text-muted-foreground animate-pulse">Waiting for scan...</p>
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <label className="text-sm font-medium">Language</label>
+                  <select
+                    value={language}
+                    onChange={(e) => setLanguage(e.target.value)}
+                    className="mt-1 w-full rounded-md border px-3 py-2 text-sm"
+                  >
+                    <option value="zh">中文</option>
+                    <option value="en">English</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-sm font-medium">City</label>
+                  <Input value={city} onChange={(e) => setCity(e.target.value)} className="mt-1" />
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Gender</label>
+                  <select
+                    value={gender}
+                    onChange={(e) => setGender(e.target.value)}
+                    className="mt-1 w-full rounded-md border px-3 py-2 text-sm"
+                  >
+                    <option value="female">女性</option>
+                    <option value="male">男性</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="text-sm font-medium">Personality / SOUL</label>
+                <Textarea value={soul} onChange={(e) => setSoul(e.target.value)} rows={5} className="mt-1" />
+              </div>
+              <div className="flex gap-2">
+                <Button onClick={handleSave} disabled={saving}>
+                  Save Changes
+                </Button>
+                <Button variant="outline" onClick={handleToggle}>
+                  {agent.status === "running" ? "Stop Agent" : "Start Agent"}
+                </Button>
+              </div>
+            </div>
+
+            <Separator className="my-6 max-w-2xl" />
+
+            <h2 className="text-lg font-semibold mb-4 max-w-2xl">WeChat Binding</h2>
+            <div className="max-w-2xl">
+              {agent.wechatBound ? (
+                <p className="text-green-700">WeChat is bound to this agent.</p>
+              ) : (
+                <div className="space-y-4">
+                  <Button onClick={handleQRCode} disabled={agent.status !== "running" || polling}>
+                    {agent.status !== "running" ? "Start agent first to bind WeChat" : polling ? "Waiting for scan..." : "Generate QR Code"}
+                  </Button>
+                  {qrUrl && (
+                    <div className="space-y-2">
+                      <div className="inline-block rounded-lg border p-4 bg-white">
+                        <QRCodeSVG value={qrUrl} size={200} />
+                      </div>
+                      {polling && (
+                        <p className="text-sm text-muted-foreground animate-pulse">Waiting for scan...</p>
+                      )}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
-          )}
-        </div>
-      )}
 
-      <Separator className="my-6" />
+            <Separator className="my-6 max-w-2xl" />
 
-      <div className="text-sm text-muted-foreground space-y-1">
-        <p>Status: {agent.status}</p>
-        <p>Port: {agent.gatewayPort}</p>
-        <p>PID: {agent.pid || "N/A"}</p>
-        <p>Created: {new Date(agent.createdAt).toLocaleString()}</p>
+            <div className="max-w-2xl text-sm text-muted-foreground space-y-1">
+              <p>Status: {agent.status}</p>
+              <p>Port: {agent.gatewayPort}</p>
+              <p>PID: {agent.pid || "N/A"}</p>
+              <p>Created: {new Date(agent.createdAt).toLocaleString()}</p>
+            </div>
+          </>
+        )}
+
+        {activeTab === "skills" && (
+          <>
+            <h1 className="text-2xl font-bold mb-6">Skills Management</h1>
+            {skills.length === 0 ? (
+              <p className="text-muted-foreground">No skills available in manager directory.</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {skills.map((skill) => {
+                  const isInstalling = installingSkills.has(skill.name);
+                  return (
+                    <div
+                      key={skill.name}
+                      className="rounded-lg border bg-card p-4 flex flex-col gap-3"
+                    >
+                      <div>
+                        <h3 className="font-medium text-sm">{skill.name}</h3>
+                        <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+                          {skill.description}
+                        </p>
+                      </div>
+                      <div className="mt-auto">
+                        {isInstalling ? (
+                          <Button disabled className="w-full" size="sm">
+                            <span className="animate-pulse">Installing...</span>
+                          </Button>
+                        ) : skill.installed ? (
+                          <Button
+                            variant="secondary"
+                            className="w-full"
+                            size="sm"
+                            onClick={() => handleUninstallSkill(skill.name)}
+                          >
+                            Uninstall
+                          </Button>
+                        ) : (
+                          <Button
+                            className="w-full"
+                            size="sm"
+                            onClick={() => handleInstallSkill(skill.name)}
+                          >
+                            Install
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
