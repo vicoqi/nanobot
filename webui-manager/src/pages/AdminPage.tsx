@@ -23,6 +23,7 @@ export default function AdminPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [tab, setTab] = useState<"agents" | "users">("agents");
+  const [togglingId, setTogglingId] = useState<number | null>(null);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -50,22 +51,15 @@ export default function AdminPage() {
     if (loggedIn) loadData();
   }, [loggedIn]);
 
-  async function handleStart(id: number) {
+  async function handleToggle(id: number, action: "start" | "stop") {
+    setTogglingId(id);
     try {
-      await adminStartAgent(id);
+      await (action === "start" ? adminStartAgent(id) : adminStopAgent(id));
       await loadData();
     } catch (err: any) {
       alert(err.message);
     }
-  }
-
-  async function handleStop(id: number) {
-    try {
-      await adminStopAgent(id);
-      await loadData();
-    } catch (err: any) {
-      alert(err.message);
-    }
+    setTogglingId(null);
   }
 
   if (!loggedIn) {
@@ -153,10 +147,16 @@ export default function AdminPage() {
                 <td className="py-2 pr-4">{a.wechatBound ? "Yes" : "No"}</td>
                 <td className="py-2 pr-4">
                   {a.status === "running" ? (
-                    <Button variant="outline" size="sm" onClick={() => handleStop(a.id)}>Stop</Button>
+                    <Button variant="outline" size="sm" disabled={togglingId === a.id} onClick={() => handleToggle(a.id, "stop")}>
+                      {togglingId === a.id ? "Stopping..." : "Stop"}
+                    </Button>
                   ) : a.status === "stopped" || a.status === "error" ? (
-                    <Button size="sm" onClick={() => handleStart(a.id)}>Start</Button>
-                  ) : null}
+                    <Button size="sm" disabled={togglingId === a.id} onClick={() => handleToggle(a.id, "start")}>
+                      {togglingId === a.id ? "Starting..." : "Start"}
+                    </Button>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">Creating...</span>
+                  )}
                 </td>
               </tr>
             ))}
