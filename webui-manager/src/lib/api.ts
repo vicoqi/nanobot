@@ -173,3 +173,33 @@ export async function getAdminAgents(): Promise<Agent[]> {
 export async function getAdminUsers(): Promise<AdminUser[]> {
   return request("/admin/users");
 }
+
+// -- Skills --
+
+export interface AvailableSkill {
+  name: string;
+  description: string;
+  installed: boolean;
+}
+
+export interface SkillsAvailableResponse {
+  skills: AvailableSkill[];
+}
+
+export async function getAvailableSkills(id: number): Promise<SkillsAvailableResponse> {
+  return request(`/api/agents/${id}/skills/available`);
+}
+
+export async function installSkill(id: number, skillName: string): Promise<{ success: boolean; message: string }> {
+  return request(`/api/agents/${id}/skills/install`, {
+    method: "POST",
+    body: JSON.stringify({ skillName }),
+  });
+}
+
+export async function uninstallSkill(id: number, skillName: string): Promise<{ success: boolean; message: string }> {
+  return request(`/api/agents/${id}/skills/uninstall`, {
+    method: "POST",
+    body: JSON.stringify({ skillName }),
+  });
+}
