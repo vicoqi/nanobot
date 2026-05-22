@@ -174,6 +174,14 @@ export async function getAdminUsers(): Promise<AdminUser[]> {
   return request("/admin/users");
 }
 
+export async function adminStartAgent(id: number): Promise<Agent> {
+  return request(`/admin/agents/${id}/start`, { method: "POST" });
+}
+
+export async function adminStopAgent(id: number): Promise<Agent> {
+  return request(`/admin/agents/${id}/stop`, { method: "POST" });
+}
+
 // -- Skills --
 
 export interface AvailableSkill {

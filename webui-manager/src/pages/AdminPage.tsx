@@ -4,6 +4,8 @@ import {
   getAdminStats,
   getAdminAgents,
   getAdminUsers,
+  adminStartAgent,
+  adminStopAgent,
   type AdminStats,
   type Agent,
   type AdminUser,
@@ -47,6 +49,24 @@ export default function AdminPage() {
   useEffect(() => {
     if (loggedIn) loadData();
   }, [loggedIn]);
+
+  async function handleStart(id: number) {
+    try {
+      await adminStartAgent(id);
+      await loadData();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  }
+
+  async function handleStop(id: number) {
+    try {
+      await adminStopAgent(id);
+      await loadData();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  }
 
   if (!loggedIn) {
     return (
@@ -119,6 +139,7 @@ export default function AdminPage() {
               <th className="py-2 pr-4">Status</th>
               <th className="py-2 pr-4">Port</th>
               <th className="py-2 pr-4">WeChat</th>
+              <th className="py-2 pr-4">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -130,6 +151,13 @@ export default function AdminPage() {
                 <td className="py-2 pr-4"><StatusBadge status={a.status} /></td>
                 <td className="py-2 pr-4">{a.gatewayPort}</td>
                 <td className="py-2 pr-4">{a.wechatBound ? "Yes" : "No"}</td>
+                <td className="py-2 pr-4">
+                  {a.status === "running" ? (
+                    <Button variant="outline" size="sm" onClick={() => handleStop(a.id)}>Stop</Button>
+                  ) : a.status === "stopped" || a.status === "error" ? (
+                    <Button size="sm" onClick={() => handleStart(a.id)}>Start</Button>
+                  ) : null}
+                </td>
               </tr>
             ))}
           </tbody>

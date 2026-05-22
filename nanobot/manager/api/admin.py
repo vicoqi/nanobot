@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from nanobot.manager.auth import create_admin_token, create_access_token, decode_access_token, get_current_admin
 from nanobot.manager.database import Database
 from nanobot.manager.models import AdminStatsResponse, AgentStatus
-from nanobot.manager.app import get_config, get_db
+from nanobot.manager.app import get_config, get_db, get_process_manager
+from nanobot.manager.services.agent_manager import AgentProcessManager
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -40,6 +41,38 @@ async def get_agent_detail(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     return agent
+
+
+@router.post("/agents/{agent_id}/start")
+async def admin_start_agent(
+    agent_id: int,
+    _admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db),
+    pm: AgentProcessManager = Depends(get_process_manager),
+):
+    agent = await db.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if agent.status == AgentStatus.RUNNING:
+        raise HTTPException(status_code=400, detail="Agent already running")
+    updated = await pm.start_agent(agent, db)
+    return updated or await db.get_agent(agent_id)
+
+
+@router.post("/agents/{agent_id}/stop")
+async def admin_stop_agent(
+    agent_id: int,
+    _admin: dict = Depends(get_current_admin),
+    db: Database = Depends(get_db),
+    pm: AgentProcessManager = Depends(get_process_manager),
+):
+    agent = await db.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if agent.status != AgentStatus.RUNNING:
+        raise HTTPException(status_code=400, detail="Agent not running")
+    updated = await pm.stop_agent(agent, db)
+    return updated or await db.get_agent(agent_id)
 
 
 @router.get("/users")
