@@ -6,8 +6,8 @@ import re
 import shutil
 from pathlib import Path
 
-from loguru import logger
 import yaml
+from loguru import logger
 
 _STRIP_FRONTMATTER = re.compile(
     r"^---\s*\r?\n(.*?)\r?\n---\s*\r?\n?",
