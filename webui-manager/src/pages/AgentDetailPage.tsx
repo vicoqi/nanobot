@@ -60,7 +60,7 @@ export default function AgentDetailPage() {
       const res = await getAvailableSkills(Number(id));
       setSkills(res.skills);
     } catch {
-      // ignore — skills list is non-critical
+      // non-critical
     }
   }, [id]);
 
@@ -112,7 +112,7 @@ export default function AgentDetailPage() {
   }
 
   async function handleQRCode() {
-    if (!id) return;
+    if (!id || intervalRef.current) return;
     try {
       const result = await generateQRCode(Number(id));
       setQrUrl(result.qrCodeUrl);
@@ -142,7 +142,6 @@ export default function AgentDetailPage() {
     setInstallingSkills((prev) => new Set(prev).add(skillName));
     try {
       await installSkill(Number(id), skillName);
-      // Poll until agent is running again (max 30s)
       const deadline = Date.now() + 30_000;
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 2000));
@@ -161,8 +160,7 @@ export default function AgentDetailPage() {
       next.delete(skillName);
       return next;
     });
-    await fetchSkills();
-    await fetchAgent();
+    await Promise.all([fetchSkills(), fetchAgent()]);
   }
 
   async function handleUninstallSkill(skillName: string) {

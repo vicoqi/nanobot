@@ -6,6 +6,7 @@ import re
 import shutil
 from pathlib import Path
 
+from loguru import logger
 import yaml
 
 _STRIP_FRONTMATTER = re.compile(
@@ -17,7 +18,6 @@ MANAGER_SKILLS_DIR = Path.home() / ".nanobot" / "manager" / "skills"
 
 
 def _parse_frontmatter(content: str) -> dict | None:
-    """Parse YAML frontmatter from a SKILL.md file."""
     if not content.startswith("---"):
         return None
     match = _STRIP_FRONTMATTER.match(content)
@@ -31,10 +31,6 @@ def _parse_frontmatter(content: str) -> dict | None:
 
 
 def scan_available_skills() -> list[dict]:
-    """Scan the manager skills directory and return skill metadata.
-
-    Returns list of dicts: { "name": str, "description": str }
-    """
     skills: list[dict] = []
     if not MANAGER_SKILLS_DIR.is_dir():
         return skills
@@ -56,7 +52,6 @@ def scan_available_skills() -> list[dict]:
 
 
 def get_installed_skill_names(workspace_path: str) -> set[str]:
-    """Return the set of skill names installed in the given workspace."""
     ws_skills = Path(workspace_path) / "skills"
     if not ws_skills.is_dir():
         return set()
@@ -68,22 +63,22 @@ def get_installed_skill_names(workspace_path: str) -> set[str]:
 
 
 def install_skill(skill_name: str, workspace_path: str) -> None:
-    """Copy a skill from the manager directory to the agent workspace."""
     src = MANAGER_SKILLS_DIR / skill_name
     if not src.is_dir():
         raise FileNotFoundError(f"Skill not found: {skill_name}")
 
     dst = Path(workspace_path) / "skills" / skill_name
-    if dst.exists():
-        raise FileExistsError(f"Skill already installed: {skill_name}")
-
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dst)
+    try:
+        shutil.copytree(src, dst)
+    except FileExistsError:
+        raise FileExistsError(f"Skill already installed: {skill_name}") from None
+    logger.info("Installed skill '{}' to {}", skill_name, workspace_path)
 
 
 def uninstall_skill(skill_name: str, workspace_path: str) -> None:
-    """Remove a skill directory from the agent workspace."""
     dst = Path(workspace_path) / "skills" / skill_name
     if not dst.is_dir():
         raise FileNotFoundError(f"Skill not installed: {skill_name}")
-    shutil.rmtree(dst)
+    shutil.rmtree(dst, ignore_errors=True)
+    logger.info("Uninstalled skill '{}' from {}", skill_name, workspace_path)
