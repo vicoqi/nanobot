@@ -1,0 +1,23 @@
+[Unit]
+Description=nanobot Manager - Multi-Agent Management API
+After=network.target
+
+[Service]
+Type=simple
+User=%USER%
+WorkingDirectory=%HOME%/nanobot
+ExecStart=%HOME%/nanobot/venv/bin/nanobot manager
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=%HOME%
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nanobot-manager
+
+[Install]
+WantedBy=multi-user.target

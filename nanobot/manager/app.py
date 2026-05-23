@@ -97,6 +97,17 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     @app.on_event("startup")
     async def startup():
         await state.db.init()
+
+        # Resume agents that were RUNNING before restart/crash
+        from nanobot.manager.models import AgentStatus
+
+        previously_running = await state.db.get_agents_by_status(AgentStatus.RUNNING)
+        if previously_running:
+            logger.info("Resuming {} previously running agent(s)...", len(previously_running))
+            for agent in previously_running:
+                logger.info("Restarting agent '{}' (was pid={})", agent.name, agent.pid)
+                await state.process_manager.start_agent(agent, state.db)
+
         state.monitor_task = asyncio.create_task(
             state.process_manager.monitor_loop(state.db)
         )
