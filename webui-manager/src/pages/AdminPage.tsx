@@ -1,4 +1,16 @@
 import { useState, useEffect } from "react";
+
+function formatRelativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
 import {
   adminLogin,
   getAdminStats,
@@ -133,6 +145,7 @@ export default function AdminPage() {
               <th className="py-2 pr-4">Status</th>
               <th className="py-2 pr-4">Port</th>
               <th className="py-2 pr-4">WeChat</th>
+              <th className="py-2 pr-4">Last Active</th>
               <th className="py-2 pr-4">Actions</th>
             </tr>
           </thead>
@@ -145,6 +158,7 @@ export default function AdminPage() {
                 <td className="py-2 pr-4"><StatusBadge status={a.status} /></td>
                 <td className="py-2 pr-4">{a.gatewayPort}</td>
                 <td className="py-2 pr-4">{a.wechatBound ? "Yes" : "No"}</td>
+                <td className="py-2 pr-4">{a.lastActiveAt ? formatRelativeTime(a.lastActiveAt) : "-"}</td>
                 <td className="py-2 pr-4">
                   {a.status === "running" ? (
                     <Button variant="outline" size="sm" disabled={togglingId === a.id} onClick={() => handleToggle(a.id, "stop")}>

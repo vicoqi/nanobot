@@ -59,6 +59,7 @@ class Agent(BaseModel):
     gender: str = "female"
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    last_active_at: datetime | None = None
 
 
 class WechatBinding(BaseModel):

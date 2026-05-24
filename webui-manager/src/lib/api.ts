@@ -79,6 +79,7 @@ export interface Agent {
   gender: string;
   createdAt: string;
   updatedAt: string;
+  lastActiveAt: string | null;
 }
 
 export interface AgentStatusResponse {

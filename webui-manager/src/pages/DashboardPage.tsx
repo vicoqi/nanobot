@@ -15,6 +15,18 @@ import {
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 
+function formatRelativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
 export default function DashboardPage() {
   const navigate = useNavigate();
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -154,9 +166,10 @@ export default function DashboardPage() {
               </div>
               {agent.soul && <p className="text-sm text-muted-foreground line-clamp-2">{agent.soul}</p>}
               <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">
-                  {agent.wechatBound ? "WeChat bound" : "Not bound"}
-                </span>
+                <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                  <span>{agent.lastActiveAt ? formatRelativeTime(agent.lastActiveAt) : "Never active"}</span>
+                  <span>{agent.wechatBound ? "WeChat bound" : "Not bound"}</span>
+                </div>
                 <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
                   <Button size="sm" variant="outline" onClick={() => handleToggle(agent)}>
                     {agent.status === "running" ? "Stop" : "Start"}

@@ -6,6 +6,7 @@ import asyncio
 import os
 import signal
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -82,7 +83,7 @@ class AgentProcessManager:
         return agent.pid is not None and self._is_alive(agent.pid)
 
     async def monitor_loop(self, db: Database) -> None:
-        """Background task: detect crashed agents every 30s."""
+        """Background task: detect crashed agents and sync last active time."""
         while True:
             try:
                 running = await db.get_agents_by_status(AgentStatus.RUNNING)
@@ -90,6 +91,23 @@ class AgentProcessManager:
                     if agent.pid and not self._is_alive(agent.pid):
                         logger.warning("Agent {} (pid={}) died unexpectedly", agent.name, agent.pid)
                         await db.update_agent(agent.id, status=AgentStatus.ERROR, pid=None)
+                        continue
+
+                    # Sync last active time from sessions directory file mtimes
+                    sessions_dir = Path(agent.workspace_path) / "sessions"
+                    if sessions_dir.is_dir():
+                        try:
+                            latest = max(
+                                (f.stat().st_mtime for f in sessions_dir.iterdir() if f.is_file()),
+                                default=0,
+                            )
+                            if latest:
+                                new_ts = datetime.fromtimestamp(latest).isoformat()
+                                db_ts = agent.last_active_at.isoformat() if agent.last_active_at else ""
+                                if new_ts != db_ts:
+                                    await db.update_agent(agent.id, last_active_at=new_ts)
+                        except Exception:
+                            pass
             except Exception:
                 logger.exception("Health monitor error")
             await asyncio.sleep(30)

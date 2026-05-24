@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS agents (
     city TEXT NOT NULL DEFAULT 'Shanghai',
     gender TEXT NOT NULL DEFAULT 'female',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_active_at DATETIME DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS wechat_bindings (
@@ -70,6 +71,10 @@ class Database:
                 await self._db.execute(f"ALTER TABLE agents ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}")
             except aiosqlite.OperationalError:
                 pass  # column already exists
+        try:
+            await self._db.execute("ALTER TABLE agents ADD COLUMN last_active_at DATETIME DEFAULT NULL")
+        except aiosqlite.OperationalError:
+            pass
         await self._db.commit()
         logger.info("Manager database initialized at {}", self.db_path)
 
@@ -259,6 +264,7 @@ class Database:
             gender=row["gender"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            last_active_at=row["last_active_at"],
         )
 
     @staticmethod
