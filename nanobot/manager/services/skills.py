@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import os
 import re
-import shutil
 from pathlib import Path
 
 import yaml
@@ -14,7 +14,7 @@ _STRIP_FRONTMATTER = re.compile(
     re.DOTALL,
 )
 
-MANAGER_SKILLS_DIR = Path.home() / ".nanobot" / "manager" / "skills"
+MANAGER_SKILLS_DIR = Path(__file__).parent.parent.parent / "manager-skills"
 
 
 def _parse_frontmatter(content: str) -> dict | None:
@@ -70,7 +70,7 @@ def install_skill(skill_name: str, workspace_path: str) -> None:
     dst = Path(workspace_path) / "skills" / skill_name
     dst.parent.mkdir(parents=True, exist_ok=True)
     try:
-        shutil.copytree(src, dst)
+        os.symlink(src.resolve(), dst)
     except FileExistsError:
         raise FileExistsError(f"Skill already installed: {skill_name}") from None
     logger.info("Installed skill '{}' to {}", skill_name, workspace_path)
@@ -78,7 +78,7 @@ def install_skill(skill_name: str, workspace_path: str) -> None:
 
 def uninstall_skill(skill_name: str, workspace_path: str) -> None:
     dst = Path(workspace_path) / "skills" / skill_name
-    if not dst.is_dir():
+    if not dst.exists():
         raise FileNotFoundError(f"Skill not installed: {skill_name}")
-    shutil.rmtree(dst, ignore_errors=True)
+    dst.unlink()
     logger.info("Uninstalled skill '{}' from {}", skill_name, workspace_path)
