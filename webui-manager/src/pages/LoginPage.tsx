@@ -7,12 +7,12 @@ export default function LoginPage() {
 
   return (
     <AuthForm
-      title="Login"
-      submitLabel="Login"
-      footerText="No account?"
-      footerLink="Register"
+      titleKey="auth.login"
+      submitKey="auth.login"
+      footerTextKey="auth.noAccount"
+      footerLinkKey="auth.register"
       footerHref="/register"
-      errorFallback="Login failed"
+      errorFallbackKey="auth.loginFailed"
       onSubmit={login}
       onSuccess={() => navigate("/dashboard")}
     />

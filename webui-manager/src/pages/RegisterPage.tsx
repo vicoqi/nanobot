@@ -7,12 +7,12 @@ export default function RegisterPage() {
 
   return (
     <AuthForm
-      title="Register"
-      submitLabel="Register"
-      footerText="Already have an account?"
-      footerLink="Login"
+      titleKey="auth.register"
+      submitKey="auth.register"
+      footerTextKey="auth.hasAccount"
+      footerLinkKey="auth.login"
       footerHref="/login"
-      errorFallback="Registration failed"
+      errorFallbackKey="auth.registerFailed"
       onSubmit={register}
       onSuccess={() => navigate("/dashboard")}
     />

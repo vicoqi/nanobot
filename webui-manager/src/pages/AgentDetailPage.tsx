@@ -14,10 +14,12 @@ import {
   type Agent,
   type AvailableSkill,
 } from "@/lib/api";
+import { useI18n } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
+import StatusBadge from "@/components/StatusBadge";
 import { QRCodeSVG } from "qrcode.react";
 
 type TabKey = "settings" | "skills";
@@ -25,6 +27,7 @@ type TabKey = "settings" | "skills";
 export default function AgentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { t } = useI18n();
   const [agent, setAgent] = useState<Agent | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("settings");
   const [name, setName] = useState("");
@@ -126,7 +129,7 @@ export default function AgentDetailPage() {
             await fetchAgent();
           } else if (status.qrCodeStatus === "expired") {
             stopPolling();
-            alert("QR code expired. Please generate a new one.");
+            alert(t("agent.qrExpired"));
           }
         } catch {
           stopPolling();
@@ -173,11 +176,11 @@ export default function AgentDetailPage() {
     await fetchSkills();
   }
 
-  if (!agent) return <div className="p-6 text-center text-muted-foreground">Loading...</div>;
+  if (!agent) return <div className="p-6 text-center text-muted-foreground">{t("common.loading")}</div>;
 
   const tabs: { key: TabKey; label: string; icon: string }[] = [
-    { key: "settings", label: "设置", icon: "⚙️" },
-    { key: "skills", label: "Skills", icon: "📦" },
+    { key: "settings", label: t("agent.settings"), icon: "⚙️" },
+    { key: "skills", label: t("agent.skills"), icon: "📦" },
   ];
 
   return (
@@ -185,7 +188,7 @@ export default function AgentDetailPage() {
       {/* Left sidebar */}
       <div className="w-40 border-r bg-muted/30 flex flex-col pt-6">
         <Button variant="ghost" onClick={() => navigate("/dashboard")} className="mb-6 mx-2 justify-start text-sm">
-          &larr; Back
+          {t("common.back")}
         </Button>
         {tabs.map((tab) => (
           <button
@@ -208,15 +211,15 @@ export default function AgentDetailPage() {
         <div className="mx-auto max-w-4xl p-6">
         {activeTab === "settings" && (
           <>
-            <h1 className="text-2xl font-bold mb-6">Agent Settings</h1>
+            <h1 className="text-2xl font-bold mb-6">{t("agent.settingsTitle")}</h1>
             <div className="max-w-2xl space-y-4">
               <div>
-                <label className="text-sm font-medium">Name</label>
+                <label className="text-sm font-medium">{t("agent.name")}</label>
                 <Input value={name} onChange={(e) => setName(e.target.value)} className="mt-1" />
               </div>
               <div className="grid grid-cols-3 gap-4">
                 <div>
-                  <label className="text-sm font-medium">Language</label>
+                  <label className="text-sm font-medium">{t("agent.language")}</label>
                   <select
                     value={language}
                     onChange={(e) => setLanguage(e.target.value)}
@@ -227,45 +230,45 @@ export default function AgentDetailPage() {
                   </select>
                 </div>
                 <div>
-                  <label className="text-sm font-medium">City</label>
+                  <label className="text-sm font-medium">{t("agent.city")}</label>
                   <Input value={city} onChange={(e) => setCity(e.target.value)} className="mt-1" />
                 </div>
                 <div>
-                  <label className="text-sm font-medium">Gender</label>
+                  <label className="text-sm font-medium">{t("agent.gender")}</label>
                   <select
                     value={gender}
                     onChange={(e) => setGender(e.target.value)}
                     className="mt-1 w-full rounded-md border px-3 py-2 text-sm"
                   >
-                    <option value="female">女性</option>
-                    <option value="male">男性</option>
+                    <option value="female">{t("agent.genderFemale")}</option>
+                    <option value="male">{t("agent.genderMale")}</option>
                   </select>
                 </div>
               </div>
               <div>
-                <label className="text-sm font-medium">Personality / SOUL</label>
+                <label className="text-sm font-medium">{t("agent.personality")}</label>
                 <Textarea value={soul} onChange={(e) => setSoul(e.target.value)} rows={5} className="mt-1" />
               </div>
               <div className="flex gap-2">
                 <Button onClick={handleSave} disabled={saving}>
-                  Save Changes
+                  {t("agent.saveChanges")}
                 </Button>
                 <Button variant="outline" onClick={handleToggle}>
-                  {agent.status === "running" ? "Stop Agent" : "Start Agent"}
+                  {agent.status === "running" ? t("agent.stopAgent") : t("agent.startAgent")}
                 </Button>
               </div>
             </div>
 
             <Separator className="my-6 max-w-2xl" />
 
-            <h2 className="text-lg font-semibold mb-4 max-w-2xl">WeChat Binding</h2>
+            <h2 className="text-lg font-semibold mb-4 max-w-2xl">{t("agent.wechatBinding")}</h2>
             <div className="max-w-2xl">
               {agent.wechatBound ? (
-                <p className="text-green-700">WeChat is bound to this agent.</p>
+                <p className="text-green-700">{t("agent.wechatBound")}</p>
               ) : (
                 <div className="space-y-4">
                   <Button onClick={handleQRCode} disabled={agent.status !== "running" || polling}>
-                    {agent.status !== "running" ? "Start agent first to bind WeChat" : polling ? "Waiting for scan..." : "Generate QR Code"}
+                    {agent.status !== "running" ? t("agent.startFirst") : polling ? t("agent.waitingScan") : t("agent.generateQR")}
                   </Button>
                   {qrUrl && (
                     <div className="space-y-2">
@@ -273,7 +276,7 @@ export default function AgentDetailPage() {
                         <QRCodeSVG value={qrUrl} size={200} />
                       </div>
                       {polling && (
-                        <p className="text-sm text-muted-foreground animate-pulse">Waiting for scan...</p>
+                        <p className="text-sm text-muted-foreground animate-pulse">{t("agent.waitingScan")}</p>
                       )}
                     </div>
                   )}
@@ -284,19 +287,19 @@ export default function AgentDetailPage() {
             <Separator className="my-6 max-w-2xl" />
 
             <div className="max-w-2xl text-sm text-muted-foreground space-y-1">
-              <p>Status: {agent.status}</p>
-              <p>Port: {agent.gatewayPort}</p>
-              <p>PID: {agent.pid || "N/A"}</p>
-              <p>Created: {new Date(agent.createdAt).toLocaleString()}</p>
+              <p>{t("agent.status")} <StatusBadge status={agent.status} /></p>
+              <p>{t("agent.port")} {agent.gatewayPort}</p>
+              <p>{t("agent.pid")} {agent.pid || t("common.na")}</p>
+              <p>{t("agent.created")} {new Date(agent.createdAt).toLocaleString()}</p>
             </div>
           </>
         )}
 
         {activeTab === "skills" && (
           <>
-            <h1 className="text-2xl font-bold mb-6">Skills Management</h1>
+            <h1 className="text-2xl font-bold mb-6">{t("agent.skillsTitle")}</h1>
             {skills.length === 0 ? (
-              <p className="text-muted-foreground">No skills available in manager directory.</p>
+              <p className="text-muted-foreground">{t("agent.noSkills")}</p>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {skills.map((skill) => {
@@ -315,7 +318,7 @@ export default function AgentDetailPage() {
                       <div className="mt-auto">
                         {isInstalling ? (
                           <Button disabled className="w-full" size="sm">
-                            <span className="animate-pulse">Installing...</span>
+                            <span className="animate-pulse">{t("common.installing")}</span>
                           </Button>
                         ) : skill.installed ? (
                           <Button
@@ -324,7 +327,7 @@ export default function AgentDetailPage() {
                             size="sm"
                             onClick={() => handleUninstallSkill(skill.name)}
                           >
-                            Uninstall
+                            {t("common.uninstall")}
                           </Button>
                         ) : (
                           <Button
@@ -332,7 +335,7 @@ export default function AgentDetailPage() {
                             size="sm"
                             onClick={() => handleInstallSkill(skill.name)}
                           >
-                            Install
+                            {t("common.install")}
                           </Button>
                         )}
                       </div>

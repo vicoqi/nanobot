@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { listAgents, createAgent, deleteAgent, startAgent, stopAgent, type Agent } from "@/lib/api";
 import { clearToken } from "@/lib/auth";
+import { useI18n } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -15,20 +16,21 @@ import {
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 
-function formatRelativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
+function formatRelativeTime(iso: string, t: (key: string, params?: Record<string, string | number>) => string): string {
+  const diff = Math.max(0, Date.now() - new Date(iso).getTime());
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return t("time.justNow");
+  if (mins < 60) return t("time.minutesAgo", { n: mins });
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return t("time.hoursAgo", { n: hours });
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
+  if (days < 30) return t("time.daysAgo", { n: days });
   return new Date(iso).toLocaleDateString();
 }
 
 export default function DashboardPage() {
   const navigate = useNavigate();
+  const { t, locale, setLocale } = useI18n();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
@@ -81,7 +83,7 @@ export default function DashboardPage() {
   }
 
   async function handleDelete(id: number) {
-    if (!confirm("Delete this agent?")) return;
+    if (!confirm(t("dashboard.confirmDelete"))) return;
     try {
       await deleteAgent(id);
       await fetchAgents();
@@ -93,18 +95,18 @@ export default function DashboardPage() {
   return (
     <div className="mx-auto max-w-4xl p-6">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">My Agents</h1>
+        <h1 className="text-2xl font-bold">{t("dashboard.title")}</h1>
         <div className="flex gap-2">
           <Dialog open={showCreate} onOpenChange={setShowCreate}>
             <DialogTrigger asChild>
-              <Button>Create Agent</Button>
+              <Button>{t("dashboard.create")}</Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Create Agent</DialogTitle>
+                <DialogTitle>{t("dashboard.create")}</DialogTitle>
               </DialogHeader>
               <div className="space-y-4 pt-2">
-                <Input placeholder="Agent name" value={name} onChange={(e) => setName(e.target.value)} />
+                <Input placeholder={t("dashboard.agentName")} value={name} onChange={(e) => setName(e.target.value)} />
                 <div className="grid grid-cols-3 gap-3">
                   <select
                     value={language}
@@ -114,28 +116,35 @@ export default function DashboardPage() {
                     <option value="zh">中文</option>
                     <option value="en">English</option>
                   </select>
-                  <Input placeholder="City" value={city} onChange={(e) => setCity(e.target.value)} />
+                  <Input placeholder={t("dashboard.city")} value={city} onChange={(e) => setCity(e.target.value)} />
                   <select
                     value={gender}
                     onChange={(e) => setGender(e.target.value)}
                     className="rounded-md border px-3 py-2 text-sm"
                   >
-                    <option value="female">女性</option>
-                    <option value="male">男性</option>
+                    <option value="female">{t("agent.genderFemale")}</option>
+                    <option value="male">{t("agent.genderMale")}</option>
                   </select>
                 </div>
                 <Textarea
-                  placeholder="Agent personality / SOUL (optional)"
+                  placeholder={t("dashboard.personality")}
                   value={soul}
                   onChange={(e) => setSoul(e.target.value)}
                   rows={4}
                 />
                 <Button onClick={handleCreate} disabled={loading || !name} className="w-full">
-                  Create
+                  {t("dashboard.createBtn")}
                 </Button>
               </div>
             </DialogContent>
           </Dialog>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setLocale(locale === "zh" ? "en" : "zh")}
+          >
+            {locale === "zh" ? "中 / EN" : "EN / 中"}
+          </Button>
           <Button
             variant="outline"
             onClick={() => {
@@ -143,7 +152,7 @@ export default function DashboardPage() {
               navigate("/login");
             }}
           >
-            Logout
+            {t("common.logout")}
           </Button>
         </div>
       </div>
@@ -151,7 +160,7 @@ export default function DashboardPage() {
       <Separator className="mb-6" />
 
       {agents.length === 0 ? (
-        <p className="text-center text-muted-foreground py-12">No agents yet. Create your first one!</p>
+        <p className="text-center text-muted-foreground py-12">{t("dashboard.empty")}</p>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2">
           {agents.map((agent) => (
@@ -167,15 +176,15 @@ export default function DashboardPage() {
               {agent.soul && <p className="text-sm text-muted-foreground line-clamp-2">{agent.soul}</p>}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                  <span>{agent.lastActiveAt ? formatRelativeTime(agent.lastActiveAt) : "Never active"}</span>
-                  <span>{agent.wechatBound ? "WeChat bound" : "Not bound"}</span>
+                  <span>{agent.lastActiveAt ? formatRelativeTime(agent.lastActiveAt, t) : t("dashboard.neverActive")}</span>
+                  <span>{agent.wechatBound ? t("dashboard.wechatBound") : t("dashboard.notBound")}</span>
                 </div>
                 <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
                   <Button size="sm" variant="outline" onClick={() => handleToggle(agent)}>
-                    {agent.status === "running" ? "Stop" : "Start"}
+                    {agent.status === "running" ? t("common.stop") : t("common.start")}
                   </Button>
                   <Button size="sm" variant="destructive" onClick={() => handleDelete(agent.id)}>
-                    Delete
+                    {t("common.delete")}
                   </Button>
                 </div>
               </div>
