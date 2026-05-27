@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import time
+import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 from loguru import logger
 
@@ -83,6 +86,9 @@ def write_agent_files(agent: Agent, config: dict) -> None:
     (workspace_path / "sessions").mkdir(exist_ok=True)
     (workspace_path / "weixin").mkdir(exist_ok=True)
 
+    # Default cron jobs (daily weather push)
+    _write_default_cron_jobs(workspace_path, agent)
+
     # SOUL.md
     soul_path = workspace_path / "SOUL.md"
     soul_path.write_text(build_soul_md(agent), encoding="utf-8")
@@ -104,6 +110,59 @@ def cleanup_agent_files(agent: Agent) -> None:
     if workspace_path.exists():
         shutil.rmtree(workspace_path, ignore_errors=True)
         logger.info("Cleaned up workspace: {}", workspace_path)
+
+
+def _write_default_cron_jobs(workspace_path: Path, agent: Agent) -> None:
+    """Write default cron jobs (daily weather push) to workspace."""
+    cron_dir = workspace_path / "cron"
+    cron_dir.mkdir(exist_ok=True)
+
+    jobs_path = cron_dir / "jobs.json"
+    if jobs_path.exists():
+        return
+
+    city = agent.city or "Shanghai"
+    city_url = quote(city, safe="")
+    lang = agent.language or "zh"
+
+    if lang == "en":
+        message = (
+            f"Push today's weather for {city}. Use curl to get real-time weather: "
+            f'curl -s "wttr.in/{city_url}?1&lang=en&T", then format it in a clean, '
+            "friendly way and send to the user. Include: current temperature and "
+            "feels-like, hourly forecast, rain probability, and travel tips."
+        )
+    else:
+        message = (
+            f"给老板推送今日{city}天气播报。使用 curl 获取{city}实时天气："
+            f'curl -s "wttr.in/{city_url}?1&lang=zh&T"，然后整理成简洁友好的格式发送给老板。'
+            "包括：当前温度和体感、全天各时段天气、降雨概率、出行建议。"
+            "最后祝老板新的一天顺顺利利！"
+        )
+
+    now_ms = int(time.time() * 1000)
+    jobs = [
+        {
+            "id": uuid.uuid4().hex[:8],
+            "name": "每日天气播报",
+            "enabled": True,
+            "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "Asia/Shanghai"},
+            "payload": {"kind": "agent_turn", "message": message, "deliver": True},
+            "state": {
+                "nextRunAtMs": 0,
+                "lastRunAtMs": None,
+                "lastStatus": None,
+                "lastError": None,
+                "runHistory": [],
+            },
+            "createdAtMs": now_ms,
+            "updatedAtMs": now_ms,
+            "deleteAfterRun": False,
+        }
+    ]
+
+    store = {"version": 1, "jobs": jobs}
+    jobs_path.write_text(json.dumps(store, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def update_agent_weixin_config(agent: Agent) -> None:

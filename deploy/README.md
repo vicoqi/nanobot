@@ -13,10 +13,10 @@ nanobot Manager 自动化部署脚本，用于在 Ubuntu 服务器上拉取代�
 
 ```bash
 # 1. 下载脚本到服务器
-scp deploy/* user@server:~/
+scp -r deploy user@server:~/
 
 # 2. 运行初始化
-GITHUB_TOKEN=ghp_xxxxxxxxxxxx ./deploy.sh --init
+GITHUB_TOKEN=ghp_xxxxxxxxxxxx ./deploy/deploy.sh --init
 ```
 
 自动完成：clone 代码 → 创建 venv → 安装依赖 → 构建前端 → 安装 systemd service。
@@ -49,15 +49,17 @@ sudo systemctl start nanobot-manager
 ## 更新部署
 
 ```bash
-GITHUB_TOKEN=ghp_xxxxxxxxxxxx ./deploy.sh
+cd ~/nanobot
+GITHUB_TOKEN=ghp_xxxxxxxxxxxx ./deploy/deploy.sh
 ```
 
 自动完成：拉取代码 → 更新依赖 → 重建前端 → 重启服务。之前运行的 agent 会自动恢复。
 
-## 切换分支
+如果要更新指定分支，例如 `main`：
 
 ```bash
-BRANCH=main GITHUB_TOKEN=ghp_xxx ./deploy.sh
+cd ~/nanobot
+GITHUB_TOKEN=ghp_xxx BRANCH=main ./deploy/deploy.sh
 ```
 
 ## 环境变量
