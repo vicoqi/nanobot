@@ -222,6 +222,13 @@ class WeixinChannel(BaseChannel):
             }
             state_file.write_text(json.dumps(data, ensure_ascii=False))
 
+    def _clear_session_state(self) -> None:
+        """Drop state that is only valid for a specific authenticated session."""
+        self._get_updates_buf = ""
+        self._context_tokens = {}
+        self._typing_tickets = {}
+        self._session_pause_until = 0.0
+
     # ------------------------------------------------------------------
     # HTTP helpers  (matches api.ts buildHeaders / apiFetch)
     # ------------------------------------------------------------------
@@ -465,9 +472,19 @@ class WeixinChannel(BaseChannel):
             follow_redirects=True,
         )
 
-        if self.config.token:
-            self._token = self.config.token
-        elif not self._load_state():
+        loaded_state = self._load_state()
+        state_token = self._token
+        config_token = str(self.config.token or "").strip()
+
+        if config_token:
+            # Restore session-bound caches from disk even when the manager also
+            # injects the bot token into config.json. If the explicit config
+            # token differs from the persisted token, the cached context/cursor
+            # state belongs to a different session and must be discarded.
+            if loaded_state and state_token and state_token != config_token:
+                self._clear_session_state()
+            self._token = config_token
+        elif not loaded_state:
             if not await self._qr_login():
                 self.logger.error("login failed. Run 'nanobot channels login weixin' to authenticate.")
                 self._running = False

@@ -80,6 +80,87 @@ def test_save_and_load_state_persists_context_tokens(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_restores_state_even_when_config_token_is_present(tmp_path) -> None:
+    bus = MessageBus()
+    state = {
+        "token": "config-token",
+        "get_updates_buf": "cursor-1",
+        "context_tokens": {"wx-user": "ctx-1"},
+        "typing_tickets": {"wx-user": {"ticket": "typing-1"}},
+        "base_url": "https://state.example",
+    }
+    (tmp_path / "account.json").write_text(json.dumps(state), encoding="utf-8")
+
+    channel = WeixinChannel(
+        WeixinConfig(
+            enabled=True,
+            allow_from=["*"],
+            token="config-token",
+            state_dir=str(tmp_path),
+        ),
+        bus,
+    )
+
+    async def _stop_after_first_poll() -> None:
+        channel._running = False
+
+    channel._poll_once = AsyncMock(side_effect=_stop_after_first_poll)
+
+    try:
+        await channel.start()
+    finally:
+        if channel._client is not None:
+            await channel._client.aclose()
+            channel._client = None
+
+    assert channel._token == "config-token"
+    assert channel._get_updates_buf == "cursor-1"
+    assert channel._context_tokens == {"wx-user": "ctx-1"}
+    assert channel._typing_tickets == {"wx-user": {"ticket": "typing-1"}}
+    assert channel.config.base_url == "https://state.example"
+
+
+@pytest.mark.asyncio
+async def test_start_clears_cached_session_state_when_config_token_changes(tmp_path) -> None:
+    bus = MessageBus()
+    state = {
+        "token": "old-token",
+        "get_updates_buf": "cursor-1",
+        "context_tokens": {"wx-user": "ctx-1"},
+        "typing_tickets": {"wx-user": {"ticket": "typing-1"}},
+        "base_url": "https://state.example",
+    }
+    (tmp_path / "account.json").write_text(json.dumps(state), encoding="utf-8")
+
+    channel = WeixinChannel(
+        WeixinConfig(
+            enabled=True,
+            allow_from=["*"],
+            token="new-token",
+            state_dir=str(tmp_path),
+        ),
+        bus,
+    )
+
+    async def _stop_after_first_poll() -> None:
+        channel._running = False
+
+    channel._poll_once = AsyncMock(side_effect=_stop_after_first_poll)
+
+    try:
+        await channel.start()
+    finally:
+        if channel._client is not None:
+            await channel._client.aclose()
+            channel._client = None
+
+    assert channel._token == "new-token"
+    assert channel._get_updates_buf == ""
+    assert channel._context_tokens == {}
+    assert channel._typing_tickets == {}
+
+
+@pytest.mark.asyncio
 async def test_process_message_deduplicates_inbound_ids() -> None:
     channel, bus = _make_channel()
     msg = {
