@@ -1289,6 +1289,39 @@ Common examples: `UTC`, `America/New_York`, `America/Los_Angeles`, `Europe/Londo
 
 > Need another timezone? Browse the full [IANA Time Zone Database](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones).
 
+## Dream-Guided Daily Delivery
+
+nanobot can run one fixed proactive delivery job whose content strategy is maintained by Dream.
+
+Enable it with `agents.defaults.dailyDelivery`:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "dailyDelivery": {
+        "enabled": true,
+        "cron": "0 8 * * *"
+      }
+    }
+  }
+}
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `agents.defaults.dailyDelivery.enabled` | `false` | Enables the fixed `daily-delivery` system job. |
+| `agents.defaults.dailyDelivery.cron` | `"0 8 * * *"` | Cron expression for when the proactive delivery should run. Uses `agents.defaults.timezone`. |
+
+How it works:
+
+1. Dream reviews recent history and may update `skills/daily-channel-delivery/PLAN.md`.
+2. The fixed scheduled job reads `skills/daily-channel-delivery/SKILL.md`, which in turn reads the current plan.
+3. The agent gathers fresh data or context at send time and produces one final user-facing message. That message can be a brief, a contextual check-in, or a grounded offer of help.
+4. Delivery goes to the most recently active enabled external channel session.
+
+If the configured `dailyDelivery.cron` lands on the same schedule slot as an existing enabled non-system cron job, nanobot auto-shifts `daily-delivery` forward in small increments to avoid collisions. If the plan is inactive, the skill returns `All clear.` and nothing is delivered. If `Active Delivery` is empty but `Candidate Backups` has a concrete first option, the executor may use that candidate for the current run. Low-confidence plans may still deliver, but should stay cautious and utility-focused.
+
 ## Unified Session
 
 By default, each channel × chat ID combination gets its own session. If you use nanobot across multiple channels (e.g. Telegram + Discord + CLI) and want them to share the same conversation, enable `unifiedSession`:

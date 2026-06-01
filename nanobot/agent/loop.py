@@ -18,7 +18,7 @@ from nanobot.agent import model_presets as preset_helpers
 from nanobot.agent.autocompact import AutoCompact
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.hook import AgentHook, CompositeHook
-from nanobot.agent.memory import Consolidator, Dream
+from nanobot.agent.memory import Consolidator, Dream, DreamPlan
 from nanobot.agent.progress_hook import AgentProgressHook
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from nanobot.agent.subagent import SubagentManager
@@ -294,6 +294,11 @@ class AgentLoop:
             provider=provider,
             model=self.model,
         )
+        self.dream_plan = DreamPlan(
+            store=self.context.memory,
+            provider=provider,
+            model=self.model,
+        )
         self.model_presets: dict[str, ModelPresetConfig] = model_presets or {}
         self._active_preset: str | None = None
         if model_preset:
@@ -382,6 +387,7 @@ class AgentLoop:
         self.subagents.set_provider(provider, model)
         self.consolidator.set_provider(provider, model, context_window_tokens)
         self.dream.set_provider(provider, model)
+        self.dream_plan.set_provider(provider, model)
         self._provider_signature = snapshot.signature
         if publish_update and self._runtime_model_publisher is not None:
             self._runtime_model_publisher(
@@ -389,6 +395,13 @@ class AgentLoop:
                 model_preset if model_preset is not None else self.model_preset,
             )
         logger.info("Runtime model switched for next turn: {} -> {}", old_model, model)
+
+    async def run_dream_passes(self) -> dict[str, bool]:
+        """Run the memory pass and plan pass under the shared /dream surface."""
+        starting_cursor = self.dream.store.get_last_dream_cursor()
+        memory_work = await self.dream.run()
+        plan_work = await self.dream_plan.run(default_since_cursor=starting_cursor)
+        return {"memory": memory_work, "plan": plan_work}
 
     def _refresh_provider_snapshot(self) -> None:
         if self._provider_snapshot_loader is None:

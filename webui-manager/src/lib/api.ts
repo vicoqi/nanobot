@@ -77,6 +77,7 @@ export interface Agent {
   language: string;
   city: string;
   gender: string;
+  dailyDeliveryEnabled: boolean;
   createdAt: string;
   updatedAt: string;
   lastActiveAt: string | null;
@@ -114,7 +115,14 @@ export async function getAgent(id: number): Promise<Agent> {
 
 export async function updateAgent(
   id: number,
-  data: { name?: string; soul?: string; language?: string; city?: string; gender?: string }
+  data: {
+    name?: string;
+    soul?: string;
+    language?: string;
+    city?: string;
+    gender?: string;
+    dailyDeliveryEnabled?: boolean;
+  }
 ): Promise<Agent> {
   return request(`/api/agents/${id}`, {
     method: "PUT",

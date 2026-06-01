@@ -65,6 +65,7 @@ const en = {
     genderFemale: "Female",
     genderMale: "Male",
     personality: "Personality / SOUL",
+    enableFriendlyDelivery: "Enable Friendly Delivery",
     saveChanges: "Save Changes",
     stopAgent: "Stop Agent",
     startAgent: "Start Agent",

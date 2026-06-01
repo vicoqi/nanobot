@@ -176,6 +176,51 @@ Legacy note:
 - Older source-based configs may still contain `dream.cron`. nanobot continues to honor it for backward compatibility, but new configs should use `intervalH`.
 - Older source-based configs may still contain `dream.model`. nanobot continues to honor it for backward compatibility, but new configs should use `modelOverride`.
 
+## Dream-Guided Daily Delivery
+
+Dream can also maintain a proactive delivery plan under your workspace:
+
+- `skills/daily-channel-delivery/SKILL.md`
+- `skills/daily-channel-delivery/PLAN.md`
+
+The skill is a fixed executor. The plan is the part Dream updates based on conversation history and user-interest signals.
+
+Enable the fixed daily-delivery system job under `agents.defaults.dailyDelivery`:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "dailyDelivery": {
+        "enabled": true,
+        "cron": "0 8 * * *"
+      }
+    }
+  }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `enabled` | Turns the fixed proactive delivery job on or off |
+| `cron` | Cron expression for when the delivery job should run |
+
+How it works:
+
+1. Dream reviews recent history and may update `PLAN.md` when it sees durable signals such as repeated utility-seeking topics, explicit requests, or corrected preferences.
+2. The fixed `daily-delivery` job runs on schedule.
+3. At send time, the agent reads `SKILL.md`, then `PLAN.md`, gathers fresh data or context, and produces one final user-facing message. That message can be an update, a contextual check-in, or an offer of help.
+4. Delivery is routed to the most recently active enabled external channel session.
+
+Guardrails:
+
+- `PLAN.md` is strategy, not today's final drafted message.
+- If `dailyDelivery.cron` collides with an existing enabled non-system cron job, nanobot auto-shifts `daily-delivery` forward in small increments.
+- If the plan is missing or inactive, the skill returns `All clear.` and nothing is delivered.
+- If `Active Delivery` is empty but `Candidate Backups` contains a concrete first option, the skill may use that candidate for the current run.
+- Low-confidence plans are still allowed to deliver; they should stay cautious and high-signal rather than guessing wildly.
+- The fixed job is not rewritten by Dream; only the plan evolves.
+
 ## In Practice
 
 What this means in daily use is simple:

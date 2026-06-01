@@ -88,6 +88,7 @@ async def test_model_command_switches_preset(tmp_path) -> None:
     assert loop.subagents.model == "openai/gpt-4.1"
     assert loop.consolidator.model == "openai/gpt-4.1"
     assert loop.dream.model == "openai/gpt-4.1"
+    assert loop.dream_plan.model == "openai/gpt-4.1"
 
 
 @pytest.mark.asyncio

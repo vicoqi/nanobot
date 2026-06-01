@@ -32,8 +32,14 @@ def resolve_workspace_path(
         p = workspace / p
     resolved = p.resolve()
     if allowed_dir:
-        media_path = get_media_dir().resolve()
-        all_dirs = [allowed_dir, media_path, *(extra_allowed_dirs or [])]
+        all_dirs = [allowed_dir, *(extra_allowed_dirs or [])]
+        try:
+            all_dirs.append(get_media_dir().resolve())
+        except OSError:
+            # Sandboxed tests and constrained runtimes may not be able to
+            # materialize the shared media directory. That should not block
+            # ordinary workspace-scoped file access.
+            pass
         if not any(is_under(resolved, d) for d in all_dirs):
             raise PermissionError(
                 f"Path {path} is outside allowed directory {allowed_dir}"

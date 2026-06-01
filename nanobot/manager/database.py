@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS agents (
     language TEXT NOT NULL DEFAULT 'zh',
     city TEXT NOT NULL DEFAULT 'Shanghai',
     gender TEXT NOT NULL DEFAULT 'female',
+    daily_delivery_enabled INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_active_at DATETIME DEFAULT NULL
@@ -66,9 +67,17 @@ class Database:
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(_SCHEMA)
         # Add new columns to existing databases
-        for col, default in [("language", "'zh'"), ("city", "'Shanghai'"), ("gender", "'female'")]:
+        for col, default in [
+            ("language", "'zh'"),
+            ("city", "'Shanghai'"),
+            ("gender", "'female'"),
+            ("daily_delivery_enabled", "0"),
+        ]:
             try:
-                await self._db.execute(f"ALTER TABLE agents ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}")
+                col_type = "INTEGER" if col == "daily_delivery_enabled" else "TEXT"
+                await self._db.execute(
+                    f"ALTER TABLE agents ADD COLUMN {col} {col_type} NOT NULL DEFAULT {default}"
+                )
             except aiosqlite.OperationalError:
                 pass  # column already exists
         try:
@@ -143,11 +152,23 @@ class Database:
         language: str = "zh",
         city: str = "Shanghai",
         gender: str = "female",
+        daily_delivery_enabled: bool = False,
     ) -> Agent:
         cursor = await self.db.execute(
-            "INSERT INTO agents (user_id, name, soul, config_path, workspace_path, gateway_port, language, city, gender) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (user_id, name, soul, config_path, workspace_path, gateway_port, language, city, gender),
+            "INSERT INTO agents (user_id, name, soul, config_path, workspace_path, gateway_port, language, city, gender, daily_delivery_enabled) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                user_id,
+                name,
+                soul,
+                config_path,
+                workspace_path,
+                gateway_port,
+                language,
+                city,
+                gender,
+                int(daily_delivery_enabled),
+            ),
         )
         await self.db.commit()
         return Agent(
@@ -161,6 +182,7 @@ class Database:
             language=language,
             city=city,
             gender=gender,
+            daily_delivery_enabled=daily_delivery_enabled,
         )
 
     async def get_agent(self, agent_id: int) -> Agent | None:
@@ -262,6 +284,7 @@ class Database:
             language=row["language"],
             city=row["city"],
             gender=row["gender"],
+            daily_delivery_enabled=bool(row["daily_delivery_enabled"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             last_active_at=row["last_active_at"],

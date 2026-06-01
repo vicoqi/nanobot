@@ -351,6 +351,27 @@ class TestWorkspaceRestriction:
         assert "outside" in result.lower()
 
     @pytest.mark.asyncio
+    async def test_write_workspace_file_still_works_when_media_dir_is_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        """Workspace writes should not depend on creating the shared media dir."""
+        from nanobot.agent.tools.filesystem import WriteFileTool
+
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+
+        def _deny_media_dir():
+            raise PermissionError("media dir unavailable")
+
+        monkeypatch.setattr("nanobot.agent.tools.path_utils.get_media_dir", _deny_media_dir)
+
+        tool = WriteFileTool(workspace=workspace, allowed_dir=workspace)
+        result = await tool.execute(path="notes.txt", content="hello")
+
+        assert "Successfully wrote" in result
+        assert (workspace / "notes.txt").read_text(encoding="utf-8") == "hello"
+
+    @pytest.mark.asyncio
     async def test_read_still_blocked_for_unrelated_dir(self, tmp_path):
         workspace = tmp_path / "ws"
         workspace.mkdir()

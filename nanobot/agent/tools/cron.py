@@ -257,6 +257,8 @@ class CronTool(Tool, ContextAware):
     def _system_job_purpose(job: CronJob) -> str:
         if job.name == "dream":
             return "Dream memory consolidation for long-term memory."
+        if job.name == "daily-delivery":
+            return "Dream-guided daily channel delivery using the fixed workspace skill and plan."
         return "System-managed internal job."
 
     def _list_jobs(self) -> str:

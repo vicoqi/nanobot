@@ -354,6 +354,44 @@ class TestSyncWorkspaceTemplates:
 
         assert (workspace / "memory").exists() or (workspace / "skills").exists()
 
+    def test_creates_daily_delivery_skill_templates(self, tmp_path):
+        """Should seed the fixed daily-delivery skill and its Dream-managed plan."""
+        workspace = tmp_path / "workspace"
+
+        sync_workspace_templates(workspace, silent=True)
+
+        skill = workspace / "skills" / "daily-channel-delivery" / "SKILL.md"
+        plan = workspace / "skills" / "daily-channel-delivery" / "PLAN.md"
+        assert skill.exists()
+        assert plan.exists()
+        assert "daily-channel-delivery" in skill.read_text(encoding="utf-8")
+        skill_text = skill.read_text(encoding="utf-8")
+        plan_text = plan.read_text(encoding="utf-8")
+        assert "status: inactive" in plan_text
+        assert "If the plan is missing or inactive" in skill_text
+        assert "first concrete candidate backup" in skill_text
+        assert "low-confidence" not in skill_text
+        assert "Active delivery may be an update, a contextual check-in, or an offer of help." in plan_text
+        assert "executor may use the first concrete candidate backup" in plan_text
+        assert "delivery may still be sent" in plan_text
+
+    def test_refreshes_managed_daily_delivery_skill_without_overwriting_plan(self, tmp_path):
+        """Existing workspaces should get the fixed executor upgrade but keep PLAN state."""
+        workspace = tmp_path / "workspace"
+        skill = workspace / "skills" / "daily-channel-delivery" / "SKILL.md"
+        plan = workspace / "skills" / "daily-channel-delivery" / "PLAN.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("legacy skill", encoding="utf-8")
+        plan.write_text("---\nstatus: active\nconfidence: high\n---\ncustom plan\n", encoding="utf-8")
+
+        sync_workspace_templates(workspace, silent=True)
+
+        skill_text = skill.read_text(encoding="utf-8")
+        plan_text = plan.read_text(encoding="utf-8")
+        assert "If the plan is missing or inactive" in skill_text
+        assert "first concrete candidate backup" in skill_text
+        assert plan_text == "---\nstatus: active\nconfidence: high\n---\ncustom plan\n"
+
     def test_returns_list_of_added_files(self, tmp_path):
         """Should return list of relative paths for added files."""
         workspace = tmp_path / "workspace"

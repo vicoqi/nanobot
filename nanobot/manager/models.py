@@ -57,6 +57,7 @@ class Agent(BaseModel):
     language: str = "zh"
     city: str = "Shanghai"
     gender: str = "female"
+    daily_delivery_enabled: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
     last_active_at: datetime | None = None
@@ -89,6 +90,8 @@ class TokenResponse(BaseModel):
 
 
 class CreateAgentRequest(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
     name: str
     soul: str = ""
     language: str = "zh"
@@ -97,11 +100,14 @@ class CreateAgentRequest(BaseModel):
 
 
 class UpdateAgentRequest(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
     name: str | None = None
     soul: str | None = None
     language: str | None = None
     city: str | None = None
     gender: str | None = None
+    daily_delivery_enabled: bool | None = None
 
 
 class AgentStatusResponse(BaseModel):

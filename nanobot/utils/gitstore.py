@@ -129,14 +129,11 @@ class GitStore:
         try:
             from dulwich import porcelain
 
-            # .gitignore excludes everything except tracked files,
-            # so any staged/unstaged change must be in our files.
+            msg_bytes = message.encode("utf-8") if isinstance(message, str) else message
+            porcelain.add(str(self._workspace), paths=self._tracked_files)
             st = porcelain.status(str(self._workspace))
             if not st.unstaged and not any(st.staged.values()):
                 return None
-
-            msg_bytes = message.encode("utf-8") if isinstance(message, str) else message
-            porcelain.add(str(self._workspace), paths=self._tracked_files)
             sha_bytes = porcelain.commit(
                 str(self._workspace),
                 message=msg_bytes,

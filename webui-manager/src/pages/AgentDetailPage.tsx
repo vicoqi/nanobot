@@ -36,6 +36,7 @@ export default function AgentDetailPage() {
   const [language, setLanguage] = useState("zh");
   const [city, setCity] = useState("Shanghai");
   const [gender, setGender] = useState("female");
+  const [friendlyDeliveryEnabled, setFriendlyDeliveryEnabled] = useState(false);
   const [polling, setPolling] = useState(false);
   const [saving, setSaving] = useState(false);
   const [skills, setSkills] = useState<AvailableSkill[]>([]);
@@ -52,6 +53,7 @@ export default function AgentDetailPage() {
       setLanguage(a.language);
       setCity(a.city);
       setGender(a.gender);
+      setFriendlyDeliveryEnabled(a.dailyDeliveryEnabled);
     } catch {
       navigate("/dashboard");
     }
@@ -84,7 +86,14 @@ export default function AgentDetailPage() {
     if (!id) return;
     setSaving(true);
     try {
-      await updateAgent(Number(id), { name, soul, language, city, gender });
+      await updateAgent(Number(id), {
+        name,
+        soul,
+        language,
+        city,
+        gender,
+        dailyDeliveryEnabled: friendlyDeliveryEnabled,
+      });
       await fetchAgent();
     } catch (err: any) {
       alert(err.message);
@@ -249,6 +258,15 @@ export default function AgentDetailPage() {
                 <label className="text-sm font-medium">{t("agent.personality")}</label>
                 <Textarea value={soul} onChange={(e) => setSoul(e.target.value)} rows={5} className="mt-1" />
               </div>
+              <label className="flex items-center gap-3 rounded-md border px-3 py-3 text-sm">
+                <input
+                  type="checkbox"
+                  checked={friendlyDeliveryEnabled}
+                  onChange={(e) => setFriendlyDeliveryEnabled(e.target.checked)}
+                  className="h-4 w-4 rounded border"
+                />
+                <span className="font-medium">{t("agent.enableFriendlyDelivery")}</span>
+              </label>
               <div className="flex gap-2">
                 <Button onClick={handleSave} disabled={saving}>
                   {t("agent.saveChanges")}

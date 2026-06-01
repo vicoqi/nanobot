@@ -74,6 +74,21 @@ class DreamConfig(Base):
         return f"every {hours}h"
 
 
+class DailyDeliveryConfig(Base):
+    """Dream-guided daily channel delivery configuration."""
+
+    enabled: bool = False
+    cron: str = "0 8 * * *"
+
+    def build_schedule(self, timezone: str) -> CronSchedule:
+        """Build the runtime schedule for the fixed daily delivery job."""
+        return CronSchedule(kind="cron", expr=self.cron, tz=timezone)
+
+    def describe_schedule(self) -> str:
+        """Return a human-readable summary for logs and startup output."""
+        return f"cron {self.cron}"
+
+
 class InlineFallbackConfig(Base):
     """One inline fallback model configuration."""
 
@@ -156,6 +171,7 @@ class AgentDefaults(Base):
         serialization_alias="consolidationRatio",
     )  # Consolidation target ratio (0.5 = 50% of budget retained after compression)
     dream: DreamConfig = Field(default_factory=DreamConfig)
+    daily_delivery: DailyDeliveryConfig = Field(default_factory=DailyDeliveryConfig)
 
 
 class AgentsConfig(Base):

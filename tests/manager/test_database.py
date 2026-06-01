@@ -74,14 +74,17 @@ class TestAgentCRUD:
             config_path="/tmp/config.json",
             workspace_path="/tmp/workspace",
             gateway_port=19001,
+            daily_delivery_enabled=True,
         )
         assert agent.id is not None
         assert agent.name == "My Agent"
         assert agent.status == AgentStatus.CREATING
+        assert agent.daily_delivery_enabled is True
 
         found = await db.get_agent(agent.id)
         assert found is not None
         assert found.soul == "You are helpful"
+        assert found.daily_delivery_enabled is True
 
     async def test_get_agents_by_user(self, db: Database):
         u1 = await db.create_user("alice", "h")
@@ -98,10 +101,16 @@ class TestAgentCRUD:
     async def test_update_agent(self, db: Database):
         user = await db.create_user("alice", "h")
         agent = await db.create_agent(user_id=user.id, name="Old Name")
-        updated = await db.update_agent(agent.id, name="New Name", status="running")
+        updated = await db.update_agent(
+            agent.id,
+            name="New Name",
+            status="running",
+            daily_delivery_enabled=True,
+        )
         assert updated is not None
         assert updated.name == "New Name"
         assert updated.status == "running"
+        assert updated.daily_delivery_enabled is True
 
     async def test_delete_agent(self, db: Database):
         user = await db.create_user("alice", "h")

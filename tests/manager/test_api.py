@@ -75,6 +75,11 @@ class TestAgentCRUD:
         agent = resp.json()
         assert agent["name"] == "My Agent"
         assert agent["status"] == "stopped"
+        assert agent["dailyDeliveryEnabled"] is False
+
+        config_path = Path(agent["configPath"])
+        config_data = json.loads(config_path.read_text(encoding="utf-8"))
+        assert config_data["agents"]["defaults"]["dailyDelivery"]["enabled"] is False
 
         resp = await client.get("/api/agents", headers=headers)
         assert resp.status_code == 200
@@ -87,11 +92,22 @@ class TestAgentCRUD:
         headers = {"Authorization": f"Bearer {reg.json()['token']}"}
 
         create = await client.post("/api/agents", json={"name": "Old"}, headers=headers)
-        agent_id = create.json()["id"]
+        created = create.json()
+        agent_id = created["id"]
+        config_path = Path(created["configPath"])
 
-        resp = await client.put(f"/api/agents/{agent_id}", json={"name": "New"}, headers=headers)
+        resp = await client.put(
+            f"/api/agents/{agent_id}",
+            json={"name": "New", "dailyDeliveryEnabled": True},
+            headers=headers,
+        )
         assert resp.status_code == 200
         assert resp.json()["name"] == "New"
+        assert resp.json()["dailyDeliveryEnabled"] is True
+
+        config_data = json.loads(config_path.read_text(encoding="utf-8"))
+        assert config_data["agents"]["defaults"]["dailyDelivery"]["enabled"] is True
+        assert config_data["agents"]["defaults"]["dailyDelivery"]["cron"] == "0 8 * * *"
 
     async def test_delete_agent(self, client: AsyncClient):
         reg = await client.post("/api/auth/register", json={"username": "carol", "password": "p"})

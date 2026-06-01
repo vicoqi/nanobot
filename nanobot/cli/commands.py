@@ -5,6 +5,7 @@ import os
 import select
 import signal
 import sys
+import time
 from collections.abc import Callable
 from contextlib import nullcontext, suppress
 from pathlib import Path
@@ -709,7 +710,15 @@ def _run_gateway(
     from nanobot.channels.manager import ChannelManager
     from nanobot.channels.websocket import publish_runtime_model_update
     from nanobot.cron.service import CronService
-    from nanobot.cron.types import CronJob
+    from nanobot.cron.types import CronJob, CronPayload
+    from nanobot.daily_delivery import (
+        resolve_daily_delivery_schedule,
+        DAILY_DELIVERY_JOB_ID,
+        DAILY_DELIVERY_JOB_NAME,
+        DAILY_DELIVERY_PLAN_PATH,
+        DAILY_DELIVERY_SKILL_PATH,
+        DAILY_DELIVERY_SUPPRESS_RESPONSE,
+    )
     from nanobot.heartbeat.service import HeartbeatService
     from nanobot.providers.factory import build_provider_snapshot, load_provider_snapshot
     from nanobot.session.manager import SessionManager
@@ -802,28 +811,28 @@ def _run_gateway(
     if isinstance(message_tool, MessageTool):
         message_tool.set_send_callback(_deliver_to_channel)
 
-    # Set cron callback (needs agent)
-    async def on_cron_job(job: CronJob) -> str | None:
-        """Execute a cron job through the agent."""
-        # Dream is an internal job — run directly, not through the agent loop.
-        if job.name == "dream":
-            try:
-                await agent.dream.run()
-                logger.info("Dream cron job completed")
-            except Exception:
-                logger.exception("Dream cron job failed")
-            return None
+    def _pick_external_target() -> tuple[str, str] | None:
+        """Pick the most recent non-internal session on an enabled external channel."""
+        enabled = set(channels.enabled_channels)
+        for item in session_manager.list_sessions():
+            key = item.get("key") or ""
+            if ":" not in key:
+                continue
+            channel, chat_id = key.split(":", 1)
+            if channel in {"cli", "system"}:
+                continue
+            if channel in enabled and chat_id:
+                return channel, chat_id
+        return None
 
-        from nanobot.utils.evaluator import evaluate_response
-
-        reminder_note = (
-            "The scheduled time has arrived. Deliver this reminder to the user now, "
-            "as a brief and natural message in their language. Speak directly to them — "
-            "do not narrate progress, summarize, include user IDs, or add status reports "
-            "like 'Done' or 'Reminded'.\n\n"
-            f"Reminder: {job.payload.message}"
-        )
-
+    async def _run_scheduled_turn(
+        prompt: str,
+        *,
+        session_key: str,
+        channel: str,
+        chat_id: str,
+    ) -> tuple[str, bool]:
+        """Execute one scheduled agent turn and report whether it self-delivered."""
         cron_tool = agent.tools.get("cron")
         cron_token = None
         if isinstance(cron_tool, CronTool):
@@ -838,10 +847,10 @@ def _run_gateway(
 
         try:
             resp = await agent.process_direct(
-                reminder_note,
-                session_key=f"cron:{job.id}",
-                channel=job.payload.channel or "cli",
-                chat_id=job.payload.to or "direct",
+                prompt,
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
                 on_progress=_silent,
             )
         finally:
@@ -850,9 +859,96 @@ def _run_gateway(
             if isinstance(message_tool, MessageTool) and message_record_token is not None:
                 message_tool.reset_record_channel_delivery(message_record_token)
 
-        response = resp.content if resp else ""
+        return resp.content if resp else "", bool(
+            isinstance(message_tool, MessageTool) and message_tool._sent_in_turn
+        )
 
-        if job.payload.deliver and isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
+    def _daily_delivery_is_deliverable(response: str) -> bool:
+        """Reject internal/meta daily-delivery outputs before user delivery."""
+        text = response.strip()
+        if not text or text == DAILY_DELIVERY_SUPPRESS_RESPONSE:
+            return False
+        lowered = text.lower()
+        leaked_patterns = [
+            str(DAILY_DELIVERY_SKILL_PATH).lower(),
+            str(DAILY_DELIVERY_PLAN_PATH).lower(),
+            "my instructions",
+            "i am supposed to",
+            "decision logic",
+            "output only the final user-facing message",
+        ]
+        return not any(pattern in lowered for pattern in leaked_patterns)
+
+    # Set cron callback (needs agent)
+    async def on_cron_job(job: CronJob) -> str | None:
+        """Execute a cron job through the agent."""
+        # Dream is an internal job — run directly, not through the agent loop.
+        if job.name == "dream":
+            try:
+                await agent.run_dream_passes()
+                logger.info("Dream cron job completed")
+            except Exception:
+                logger.exception("Dream cron job failed")
+            return None
+
+        from nanobot.utils.evaluator import evaluate_response
+
+        if job.name == DAILY_DELIVERY_JOB_NAME:
+            target = _pick_external_target()
+            if target is None:
+                logger.info("Daily delivery skipped: no active external channel target")
+                return None
+            channel, chat_id = target
+            delivery_note = (
+                "[Your response will be delivered directly to the user's messaging app. "
+                "Output ONLY the final user-facing message. "
+                f"Read `{DAILY_DELIVERY_SKILL_PATH}` first and follow it. "
+                f"That skill will tell you to read `{DAILY_DELIVERY_PLAN_PATH}`. "
+                "If the active delivery section is empty but the plan includes candidate backups, "
+                "use the first concrete candidate backup before suppressing delivery. "
+                f"If the plan is inactive or says not to send anything today, "
+                f"respond with exactly '{DAILY_DELIVERY_SUPPRESS_RESPONSE}' and nothing else.]\n\n"
+                "Execute today's proactive delivery."
+            )
+            response, self_delivered = await _run_scheduled_turn(
+                delivery_note,
+                session_key=DAILY_DELIVERY_JOB_ID,
+                channel=channel,
+                chat_id=chat_id,
+            )
+            if self_delivered:
+                return response
+            if not _daily_delivery_is_deliverable(response):
+                logger.info("Daily delivery suppressed ({})", response[:80] if response else "empty")
+                return response
+            should_notify = await evaluate_response(
+                response, delivery_note, agent.provider, agent.model,
+            )
+            if should_notify:
+                await _deliver_to_channel(
+                    OutboundMessage(channel=channel, chat_id=chat_id, content=response),
+                    record=True,
+                )
+            else:
+                logger.info("Daily delivery silenced by post-run evaluation")
+            return response
+
+        reminder_note = (
+            "The scheduled time has arrived. Deliver this reminder to the user now, "
+            "as a brief and natural message in their language. Speak directly to them — "
+            "do not narrate progress, summarize, include user IDs, or add status reports "
+            "like 'Done' or 'Reminded'.\n\n"
+            f"Reminder: {job.payload.message}"
+        )
+
+        response, self_delivered = await _run_scheduled_turn(
+            reminder_note,
+            session_key=f"cron:{job.id}",
+            channel=job.payload.channel or "cli",
+            chat_id=job.payload.to or "direct",
+        )
+
+        if job.payload.deliver and self_delivered:
             return response
 
         if job.payload.deliver and job.payload.to and response:
@@ -892,19 +988,8 @@ def _run_gateway(
 
     def _pick_heartbeat_target() -> tuple[str, str]:
         """Pick a routable channel/chat target for heartbeat-triggered messages."""
-        enabled = set(channels.enabled_channels)
-        # Prefer the most recently updated non-internal session on an enabled channel.
-        for item in session_manager.list_sessions():
-            key = item.get("key") or ""
-            if ":" not in key:
-                continue
-            channel, chat_id = key.split(":", 1)
-            if channel in {"cli", "system"}:
-                continue
-            if channel in enabled and chat_id:
-                return channel, chat_id
-        # Fallback keeps prior behavior but remains explicit.
-        return "cli", "direct"
+        target = _pick_external_target()
+        return target if target is not None else ("cli", "direct")
 
     # Create heartbeat service
     heartbeat_preamble = (
@@ -1028,7 +1113,6 @@ def _run_gateway(
     agent.dream.max_batch_size = dream_cfg.max_batch_size
     agent.dream.max_iterations = dream_cfg.max_iterations
     agent.dream.annotate_line_ages = dream_cfg.annotate_line_ages
-    from nanobot.cron.types import CronJob, CronPayload
     cron.register_system_job(CronJob(
         id="dream",
         name="dream",
@@ -1036,6 +1120,34 @@ def _run_gateway(
         payload=CronPayload(kind="system_event"),
     ))
     console.print(f"[green]✓[/green] Dream: {dream_cfg.describe_schedule()}")
+
+    daily_cfg = config.agents.defaults.daily_delivery
+    if daily_cfg.enabled:
+        base_daily_schedule = daily_cfg.build_schedule(config.agents.defaults.timezone)
+        daily_schedule, offset_minutes = resolve_daily_delivery_schedule(
+            base_daily_schedule,
+            cron.list_jobs(include_disabled=True),
+            now_ms=int(time.time() * 1000),
+        )
+        cron.register_system_job(CronJob(
+            id=DAILY_DELIVERY_JOB_ID,
+            name=DAILY_DELIVERY_JOB_NAME,
+            schedule=daily_schedule,
+            payload=CronPayload(kind="system_event"),
+        ))
+        if offset_minutes > 0 and daily_schedule.expr:
+            logger.info(
+                "Daily delivery schedule auto-shifted from {} to {} (+{}m) to avoid cron conflicts",
+                base_daily_schedule.expr,
+                daily_schedule.expr,
+                offset_minutes,
+            )
+            console.print(
+                "[green]✓[/green] Daily delivery: "
+                f"cron {daily_schedule.expr} (auto-shifted +{offset_minutes}m from {daily_cfg.cron})"
+            )
+        else:
+            console.print(f"[green]✓[/green] Daily delivery: {daily_cfg.describe_schedule()}")
 
     async def _open_browser_when_ready() -> None:
         """Wait for the gateway to bind, then point the user's browser at the webui."""

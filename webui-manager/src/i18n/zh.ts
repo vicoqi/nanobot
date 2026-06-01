@@ -65,6 +65,7 @@ const zh = {
     genderFemale: "女性",
     genderMale: "男性",
     personality: "性格 / SOUL",
+    enableFriendlyDelivery: "开启友好推送",
     saveChanges: "保存修改",
     stopAgent: "停止 Agent",
     startAgent: "启动 Agent",

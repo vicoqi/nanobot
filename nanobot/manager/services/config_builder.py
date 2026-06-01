@@ -13,6 +13,8 @@ from loguru import logger
 from nanobot.manager.config import ManagerConfig
 from nanobot.manager.models import Agent
 
+DEFAULT_FRIENDLY_DELIVERY_CRON = "0 8 * * *"
+
 
 def build_soul_md(agent: Agent) -> str:
     """Build SOUL.md content with profile info and user-defined personality."""
@@ -45,6 +47,10 @@ def build_agent_config(manager_config: ManagerConfig, agent: Agent) -> dict:
                 "maxTokens": defaults.max_tokens,
                 "contextWindowTokens": defaults.context_window_tokens,
                 "timezone": "Asia/Shanghai",
+                "dailyDelivery": {
+                    "enabled": agent.daily_delivery_enabled,
+                    "cron": DEFAULT_FRIENDLY_DELIVERY_CRON,
+                },
             },
         },
         "providers": providers_data,
@@ -179,3 +185,26 @@ def update_agent_weixin_config(agent: Agent) -> None:
     })
     config_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     logger.info("Updated agent config: weixin enabled for agent {}", agent.id)
+
+
+def update_agent_daily_delivery_config(agent: Agent) -> None:
+    """Update agent config.json to reflect the friendly-delivery toggle."""
+    config_path = Path(agent.config_path)
+    if not config_path.exists():
+        logger.warning("Agent config not found: {}", config_path)
+        return
+
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    defaults = data.setdefault("agents", {}).setdefault("defaults", {})
+    current = defaults.get("dailyDelivery")
+    cron = DEFAULT_FRIENDLY_DELIVERY_CRON
+    if isinstance(current, dict):
+        existing_cron = current.get("cron")
+        if isinstance(existing_cron, str) and existing_cron.strip():
+            cron = existing_cron.strip()
+    defaults["dailyDelivery"] = {
+        "enabled": agent.daily_delivery_enabled,
+        "cron": cron,
+    }
+    config_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.info("Updated agent config: dailyDelivery enabled={} for agent {}", agent.daily_delivery_enabled, agent.id)

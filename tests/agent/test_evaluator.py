@@ -1,6 +1,7 @@
 import pytest
 
 from nanobot.utils.evaluator import evaluate_response
+from nanobot.utils.prompt_templates import render_template
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 
@@ -61,3 +62,10 @@ async def test_no_tool_call_fallback() -> None:
     provider = DummyProvider([LLMResponse(content="I think you should notify", tool_calls=[])])
     result = await evaluate_response("some response", "some task", provider, "m")
     assert result is True
+
+
+def test_evaluator_prompt_treats_proactive_checkins_as_notify_worthy() -> None:
+    system_prompt = render_template("agent/evaluator.md", part="system")
+
+    assert "contextual check-in" in system_prompt
+    assert "offer of help" in system_prompt
