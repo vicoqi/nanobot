@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import re
+import threading
 import weakref
 from contextlib import suppress
 from datetime import datetime
@@ -63,6 +64,7 @@ class MemoryStore:
         self._dream_plan_cursor_file = self.memory_dir / ".dream_plan_cursor"
         self._corruption_logged = False  # rate-limit non-int cursor warning
         self._oversize_logged = False  # rate-limit oversized-entry warning
+        self._append_lock = threading.Lock()  # serialize cursor allocation + append
         self._git = GitStore(workspace, tracked_files=[
             "SOUL.md",
             "USER.md",
@@ -253,7 +255,6 @@ class MemoryStore:
         large writes (e.g. an LLM echoing its input back as a "summary").
         """
         limit = max_chars if max_chars is not None else _HISTORY_ENTRY_HARD_CAP
-        cursor = self._next_cursor()
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
         raw = entry.rstrip()
         if len(raw) > limit:
@@ -267,16 +268,20 @@ class MemoryStore:
                 )
             raw = truncate_text(raw, limit)
         content = strip_think(raw)
-        if raw and not content:
-            logger.debug(
-                "history entry {} stripped to empty (likely template leak); "
-                "persisting empty content to avoid re-polluting context",
-                cursor,
-            )
-        record = {"cursor": cursor, "timestamp": ts, "content": content}
-        with open(self.history_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        self._cursor_file.write_text(str(cursor), encoding="utf-8")
+        # Cursor allocation and the append must be atomic: concurrent writers
+        # could otherwise read the same current cursor and emit duplicates.
+        with self._append_lock:
+            cursor = self._next_cursor()
+            if raw and not content:
+                logger.debug(
+                    "history entry {} stripped to empty (likely template leak); "
+                    "persisting empty content to avoid re-polluting context",
+                    cursor,
+                )
+            record = {"cursor": cursor, "timestamp": ts, "content": content}
+            with open(self.history_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self._cursor_file.write_text(str(cursor), encoding="utf-8")
         return cursor
 
     @staticmethod
@@ -695,11 +700,18 @@ class Consolidator:
         The budget reserves space for completion tokens and a safety buffer
         so the LLM request never exceeds the context window.
         """
-        if not session.messages or self.context_window_tokens <= 0:
+        if self.context_window_tokens <= 0:
             return
 
         lock = self.get_lock(session.key)
         async with lock:
+            # Refresh session reference: AutoCompact may have replaced it.
+            fresh = self.sessions.get_or_create(session.key)
+            if fresh is not session:
+                session = fresh
+            if not session.messages:
+                return
+
             budget = self._input_token_budget
             target = int(budget * self.consolidation_ratio)
             last_summary = await self._consolidate_replay_overflow(
@@ -785,6 +797,73 @@ class Consolidator:
             # into the runtime context on the next prepare_session() call, aligning
             # the summary injection strategy with AutoCompact._archive().
             self._persist_last_summary(session, last_summary)
+
+    async def compact_idle_session(
+        self,
+        session_key: str,
+        max_suffix: int = 8,
+    ) -> str | None:
+        """Hard-truncate an idle session under the consolidation lock.
+
+        Used by AutoCompact so all session mutation goes through a single
+        lock-protected path.  Returns the summary text on success, ``None``
+        if the LLM failed (raw_archive fallback), or ``""`` if there was
+        nothing to archive.
+        """
+        lock = self.get_lock(session_key)
+        async with lock:
+            self.sessions.invalidate(session_key)
+            session = self.sessions.get_or_create(session_key)
+
+            tail = list(session.messages[session.last_consolidated:])
+            if not tail:
+                session.updated_at = datetime.now()
+                self.sessions.save(session)
+                return ""
+
+            probe = Session(
+                key=session.key,
+                messages=tail.copy(),
+                created_at=session.created_at,
+                updated_at=session.updated_at,
+                metadata={},
+                last_consolidated=0,
+            )
+            dropped, already_consolidated = probe.retain_recent_legal_suffix(max_suffix)
+            kept = probe.messages
+            archive_msgs = dropped[already_consolidated:]
+
+            if not archive_msgs and not kept:
+                session.updated_at = datetime.now()
+                self.sessions.save(session)
+                return ""
+
+            last_active = session.updated_at
+            summary: str | None = ""
+            if archive_msgs:
+                summary = await self.archive(archive_msgs)
+
+            if summary and summary != "(nothing)":
+                session.metadata["_last_summary"] = {
+                    "text": summary,
+                    "last_active": last_active.isoformat(),
+                }
+
+            session.messages = kept
+            session.last_consolidated = 0
+            session.updated_at = datetime.now()
+            self.sessions.save(session)
+
+            if archive_msgs:
+                logger.info(
+                    "Idle-session compact for {}: archived={}, kept={}, summary={}",
+                    session_key,
+                    len(archive_msgs),
+                    len(kept),
+                    bool(summary),
+                )
+
+            return summary
 
 
 # ---------------------------------------------------------------------------

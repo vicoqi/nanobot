@@ -14,14 +14,15 @@ from nanobot.agent.tools.schema import (
     StringSchema,
     tool_parameters_schema,
 )
+from nanobot.security.workspace_access import current_tool_workspace
 from nanobot.config.paths import get_media_dir
 from nanobot.config.schema import Base
 from nanobot.providers.image_generation import (
-    AIHubMixImageGenerationClient,
     ImageGenerationError,
-    OpenAIImagesClient,
-    OpenRouterImageGenerationClient,
+    ImageGenerationProvider,
+    get_image_gen_provider,
 )
+from nanobot.security.workspace_policy import WorkspaceBoundaryError, resolve_allowed_path
 from nanobot.utils.artifacts import (
     ArtifactError,
     generated_image_tool_result,
@@ -31,18 +32,6 @@ from nanobot.utils.helpers import detect_image_mime
 
 if TYPE_CHECKING:
     from nanobot.config.schema import ProviderConfig
-
-_PROVIDER_CLIENTS: dict[str, type] = {
-    "openrouter": OpenRouterImageGenerationClient,
-    "aihubmix": AIHubMixImageGenerationClient,
-    "openai-images": OpenAIImagesClient,
-}
-
-_PROVIDER_KEY_HINTS: dict[str, str] = {
-    "openrouter": "providers.openrouter.apiKey",
-    "aihubmix": "providers.aihubmix.apiKey",
-    "openai-images": "providers.openai.apiKey",
-}
 
 
 class ImageGenerationToolConfig(Base):
@@ -130,37 +119,36 @@ class ImageGenerationTool(Tool):
     def _provider_config(self) -> ProviderConfig | None:
         return self.provider_configs.get(self.config.provider)
 
-    def _provider_client(self):
+    def _provider_client(self) -> ImageGenerationProvider | None:
         provider = self._provider_config()
+        cls = get_image_gen_provider(self.config.provider)
+        if cls is None:
+            return None
         kwargs = {
             "api_key": provider.api_key if provider else None,
             "api_base": provider.api_base if provider else None,
             "extra_headers": provider.extra_headers if provider else None,
             "extra_body": provider.extra_body if provider else None,
         }
-        cls = _PROVIDER_CLIENTS.get(self.config.provider)
-        return cls(**kwargs) if cls else None
-
-    def _missing_api_key_error(self) -> str:
-        provider = self.config.provider
-        key_hint = _PROVIDER_KEY_HINTS.get(provider)
-        if key_hint:
-            return f"Error: {provider} API key is not configured. Set {key_hint}."
-        return f"Error: {provider} API key is not configured."
+        return cls(**kwargs)
 
     def _resolve_reference_image(self, value: str) -> str:
-        raw_path = Path(value).expanduser()
-        path = raw_path if raw_path.is_absolute() else self.workspace / raw_path
+        access = current_tool_workspace(self.workspace, restrict_to_workspace=True)
+        workspace = access.project_path or self.workspace
         try:
-            resolved = path.resolve(strict=True)
-        except OSError as exc:
-            raise ImageGenerationError(f"reference image not found: {value}") from exc
-
-        allowed_roots = [self.workspace.resolve(), get_media_dir().resolve()]
-        if not any(_is_relative_to(resolved, root) for root in allowed_roots):
+            resolved = resolve_allowed_path(
+                value,
+                workspace=workspace,
+                allowed_root=access.allowed_root,
+                extra_allowed_roots=[get_media_dir()] if access.allowed_root is not None else None,
+                strict=True,
+            )
+        except WorkspaceBoundaryError as exc:
             raise ImageGenerationError(
                 "reference_images must be inside the workspace or nanobot media directory"
-            )
+            ) from exc
+        except OSError as exc:
+            raise ImageGenerationError(f"reference image not found: {value}") from exc
         if not resolved.is_file():
             raise ImageGenerationError(f"reference image is not a file: {value}")
         raw = resolved.read_bytes()
@@ -185,9 +173,6 @@ class ImageGenerationTool(Tool):
         client = self._provider_client()
         if client is None:
             return f"Error: unsupported image generation provider '{self.config.provider}'"
-        provider = self._provider_config()
-        if not provider or not provider.api_key:
-            return self._missing_api_key_error()
 
         requested = count or 1
         if requested > self.config.max_images_per_turn:
@@ -222,11 +207,3 @@ class ImageGenerationTool(Tool):
             return generated_image_tool_result(artifacts)
         except (ArtifactError, ImageGenerationError, OSError) as exc:
             return f"Error: {exc}"
-
-
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True

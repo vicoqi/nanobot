@@ -69,3 +69,21 @@ def test_evaluator_prompt_treats_proactive_checkins_as_notify_worthy() -> None:
 
     assert "contextual check-in" in system_prompt
     assert "offer of help" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_fail_closed_on_error() -> None:
+    class FailingProvider(DummyProvider):
+        async def chat(self, *args, **kwargs) -> LLMResponse:
+            raise RuntimeError("provider down")
+
+    provider = FailingProvider([])
+    result = await evaluate_response("some", "task", provider, "m", default_notify=False)
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_fail_closed_on_no_tool_call() -> None:
+    provider = DummyProvider([LLMResponse(content="text only", tool_calls=[])])
+    result = await evaluate_response("some", "task", provider, "m", default_notify=False)
+    assert result is False

@@ -15,7 +15,7 @@ If the `generate_image` tool is not available in the current tool list, tell the
 - Image editing: pass the saved artifact path or user image path in `reference_images`.
 - Iterative edits in the same conversation: prefer the most recent generated image artifact if the user says things like "make it brighter", "change the background", or "try another version".
 - Ambiguous edits: ask a short clarifying question if multiple recent images could be the target.
-- In the current chat, do not call `message` just to announce or resend generated images. The runtime attaches images from `generate_image` to the final assistant reply automatically.
+- After generating images, call the `message` tool with the artifact paths in the `media` parameter to deliver them to the user.
 
 ## Prompt Rules
 
@@ -88,7 +88,7 @@ AIHubMix `gpt-image-2-free` uses AIHubMix's unified predictions endpoint interna
 
 `providers.aihubmix.extraBody` can be used for provider-specific options. For example, `"extraBody": {"quality": "low"}` is optional but can make `gpt-image-2-free` faster and less likely to time out.
 
-For openai-images, the image tool uses the standard OpenAI Images API (`/images/generations`). It shares the `providers.openai` config, so the same API key works for both LLM chat and image generation. Set `apiBase` to point at any Images API compatible endpoint:
+For OpenAI, the image tool uses the standard OpenAI Images API (`/images/generations`). It shares the `providers.openai` config, so the same API key works for both LLM chat and image generation. Set `apiBase` to point at any Images API compatible endpoint:
 
 ```json
 {
@@ -101,7 +101,7 @@ For openai-images, the image tool uses the standard OpenAI Images API (`/images/
   "tools": {
     "imageGeneration": {
       "enabled": true,
-      "provider": "openai-images",
+      "provider": "openai",
       "model": "gpt-image-1"
     }
   }
