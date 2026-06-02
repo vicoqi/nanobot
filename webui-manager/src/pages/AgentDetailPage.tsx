@@ -193,17 +193,18 @@ export default function AgentDetailPage() {
   ];
 
   return (
-    <div className="flex h-screen">
-      {/* Left sidebar */}
-      <div className="w-40 border-r bg-muted/30 flex flex-col pt-6">
-        <Button variant="ghost" onClick={() => navigate("/dashboard")} className="mb-6 mx-2 justify-start text-sm">
+    <div className="flex min-h-dvh flex-col md:h-screen md:flex-row">
+      {/* Navigation */}
+      <div className="border-b bg-muted/30 md:w-40 md:border-b-0 md:border-r md:pt-6">
+        <div className="flex items-center gap-2 overflow-x-auto p-3 md:flex-col md:items-stretch md:gap-0 md:p-0">
+        <Button variant="ghost" onClick={() => navigate("/dashboard")} className="shrink-0 justify-start text-sm md:mx-2 md:mb-6">
           {t("common.back")}
         </Button>
         {tabs.map((tab) => (
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
-            className={`flex items-center gap-2 px-4 py-3 text-sm text-left transition-colors ${
+            className={`flex shrink-0 items-center gap-2 rounded-md px-4 py-2 text-left text-sm transition-colors md:rounded-none md:py-3 ${
               activeTab === tab.key
                 ? "bg-primary text-primary-foreground font-medium"
                 : "hover:bg-muted text-muted-foreground"
@@ -213,11 +214,12 @@ export default function AgentDetailPage() {
             <span>{tab.label}</span>
           </button>
         ))}
+        </div>
       </div>
 
       {/* Right content area */}
-      <div className="flex-1 overflow-auto">
-        <div className="mx-auto max-w-4xl p-6">
+      <div className="min-w-0 flex-1 overflow-auto">
+        <div className="mx-auto max-w-4xl p-4 sm:p-6">
         {activeTab === "settings" && (
           <>
             <h1 className="text-2xl font-bold mb-6">{t("agent.settingsTitle")}</h1>
@@ -226,7 +228,7 @@ export default function AgentDetailPage() {
                 <label className="text-sm font-medium">{t("agent.name")}</label>
                 <Input value={name} onChange={(e) => setName(e.target.value)} className="mt-1" />
               </div>
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid gap-4 sm:grid-cols-3">
                 <div>
                   <label className="text-sm font-medium">{t("agent.language")}</label>
                   <select
@@ -267,11 +269,11 @@ export default function AgentDetailPage() {
                 />
                 <span className="font-medium">{t("agent.enableFriendlyDelivery")}</span>
               </label>
-              <div className="flex gap-2">
-                <Button onClick={handleSave} disabled={saving}>
+              <div className="grid gap-2 sm:flex">
+                <Button onClick={handleSave} disabled={saving} className="w-full sm:w-auto">
                   {t("agent.saveChanges")}
                 </Button>
-                <Button variant="outline" onClick={handleToggle}>
+                <Button variant="outline" onClick={handleToggle} className="w-full sm:w-auto">
                   {agent.status === "running" ? t("agent.stopAgent") : t("agent.startAgent")}
                 </Button>
               </div>
@@ -290,8 +292,8 @@ export default function AgentDetailPage() {
                   </Button>
                   {qrUrl && (
                     <div className="space-y-2">
-                      <div className="inline-block rounded-lg border p-4 bg-white">
-                        <QRCodeSVG value={qrUrl} size={200} />
+                      <div className="inline-block max-w-full rounded-lg border bg-white p-3 sm:p-4">
+                        <QRCodeSVG value={qrUrl} size={180} className="h-auto max-w-full sm:h-[200px] sm:w-[200px]" />
                       </div>
                       {polling && (
                         <p className="text-sm text-muted-foreground animate-pulse">{t("agent.waitingScan")}</p>
@@ -304,8 +306,8 @@ export default function AgentDetailPage() {
 
             <Separator className="my-6 max-w-2xl" />
 
-            <div className="max-w-2xl text-sm text-muted-foreground space-y-1">
-              <p>{t("agent.status")} <StatusBadge status={agent.status} /></p>
+            <div className="grid max-w-2xl gap-2 text-sm text-muted-foreground sm:grid-cols-2">
+              <p className="flex items-center gap-2">{t("agent.status")} <StatusBadge status={agent.status} /></p>
               <p>{t("agent.port")} {agent.gatewayPort}</p>
               <p>{t("agent.pid")} {agent.pid || t("common.na")}</p>
               <p>{t("agent.created")} {new Date(agent.createdAt).toLocaleString()}</p>
