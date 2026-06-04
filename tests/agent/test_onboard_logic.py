@@ -390,8 +390,15 @@ class TestSyncWorkspaceTemplates:
         assert "status: inactive" in plan_text
         assert "If the plan is missing or inactive" in skill_text
         assert "first concrete candidate backup" in skill_text
+        assert "legacy `Active Delivery`" not in skill_text
+        assert "Do not treat `type`, `intent`, or `goal` as valid" in skill_text
         assert "low-confidence" not in skill_text
-        assert "Active delivery may be an update, a contextual check-in, or an offer of help." in plan_text
+        assert "Store durable strategy and today's delivery intent" in plan_text
+        assert "## Today Delivery Intent" in plan_text
+        assert "Required exact keys" in plan_text
+        assert "- delivery_type:" in plan_text
+        assert "- message_goal:" in plan_text
+        assert "Delivery Type Rotation" in plan_text
         assert "executor may use the first concrete candidate backup" in plan_text
         assert "delivery may still be sent" in plan_text
 

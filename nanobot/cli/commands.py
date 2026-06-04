@@ -935,7 +935,10 @@ def _run_gateway(
         DAILY_DELIVERY_PLAN_PATH,
         DAILY_DELIVERY_SKILL_PATH,
         DAILY_DELIVERY_SUPPRESS_RESPONSE,
+        hash_daily_delivery_plan,
+        load_daily_delivery_state,
         resolve_daily_delivery_schedule,
+        save_daily_delivery_state,
     )
     from nanobot.providers.factory import build_provider_snapshot, load_provider_snapshot
     from nanobot.providers.image_generation import image_gen_provider_configs
@@ -1096,6 +1099,32 @@ def _run_gateway(
         ]
         return not any(pattern in lowered for pattern in leaked_patterns)
 
+    def _record_daily_delivery_state(
+        state: dict[str, Any],
+        plan_hash: str,
+        *,
+        status: str,
+        skipped: bool = False,
+        skip_reason: str | None = None,
+    ) -> None:
+        """Best-effort runtime marker so unchanged PLAN.md is not re-executed hourly."""
+        now_ms = int(time.time() * 1000)
+        next_state = dict(state)
+        next_state["lastPlanHash"] = plan_hash
+        next_state["lastStatus"] = status
+        if skipped:
+            next_state["lastSkippedAtMs"] = now_ms
+            next_state["lastSkipReason"] = skip_reason or status
+        else:
+            next_state["lastExecutedAtMs"] = now_ms
+
+        try:
+            save_daily_delivery_state(config.workspace_path, next_state)
+        except Exception:
+            logger.exception(
+                "Daily delivery state update failed; unchanged PLAN.md may run again"
+            )
+
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
@@ -1174,6 +1203,19 @@ def _run_gateway(
             return response
 
         if job.name == DAILY_DELIVERY_JOB_NAME:
+            plan_hash = hash_daily_delivery_plan(config.workspace_path)
+            delivery_state = load_daily_delivery_state(config.workspace_path)
+            if delivery_state.get("lastPlanHash") == plan_hash:
+                _record_daily_delivery_state(
+                    delivery_state,
+                    plan_hash,
+                    status="skipped",
+                    skipped=True,
+                    skip_reason="plan_unchanged",
+                )
+                logger.info("Daily delivery skipped: PLAN.md unchanged ({})", plan_hash)
+                return None
+
             target = _pick_external_target()
             if target is None:
                 logger.info("Daily delivery skipped: no active external channel target")
@@ -1184,7 +1226,8 @@ def _run_gateway(
                 "Output ONLY the final user-facing message. "
                 f"Read `{DAILY_DELIVERY_SKILL_PATH}` first and follow it. "
                 f"That skill will tell you to read `{DAILY_DELIVERY_PLAN_PATH}`. "
-                "If the active delivery section is empty but the plan includes candidate backups, "
+                "Use the strict V2 Today Delivery Intent when it is valid. "
+                "If the intent is missing but the plan includes candidate backups, "
                 "use the first concrete candidate backup before suppressing delivery. "
                 f"If the plan is inactive or says not to send anything today, "
                 f"respond with exactly '{DAILY_DELIVERY_SUPPRESS_RESPONSE}' and nothing else.]\n\n"
@@ -1197,9 +1240,19 @@ def _run_gateway(
                 chat_id=chat_id,
             )
             if self_delivered:
+                _record_daily_delivery_state(
+                    delivery_state,
+                    plan_hash,
+                    status="self_delivered",
+                )
                 return response
             if not _daily_delivery_is_deliverable(response):
                 logger.info("Daily delivery suppressed ({})", response[:80] if response else "empty")
+                _record_daily_delivery_state(
+                    delivery_state,
+                    plan_hash,
+                    status="suppressed",
+                )
                 return response
             should_notify = await evaluate_response(
                 response, delivery_note, agent.provider, agent.model,
@@ -1209,8 +1262,18 @@ def _run_gateway(
                     OutboundMessage(channel=channel, chat_id=chat_id, content=response),
                     record=True,
                 )
+                _record_daily_delivery_state(
+                    delivery_state,
+                    plan_hash,
+                    status="sent",
+                )
             else:
                 logger.info("Daily delivery silenced by post-run evaluation")
+                _record_daily_delivery_state(
+                    delivery_state,
+                    plan_hash,
+                    status="silenced",
+                )
             return response
 
         reminder_note = (

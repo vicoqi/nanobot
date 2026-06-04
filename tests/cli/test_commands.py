@@ -10,7 +10,6 @@ from typer.testing import CliRunner
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.cli.commands import app
-from nanobot.providers.factory import make_provider
 from nanobot.config.schema import Config
 from nanobot.cron.types import CronJob, CronPayload, CronSchedule
 from nanobot.daily_delivery import (
@@ -18,8 +17,11 @@ from nanobot.daily_delivery import (
     DAILY_DELIVERY_JOB_NAME,
     DAILY_DELIVERY_PLAN_PATH,
     DAILY_DELIVERY_SKILL_PATH,
+    DAILY_DELIVERY_STATE_PATH,
+    hash_daily_delivery_plan,
+    save_daily_delivery_state,
 )
-from nanobot.providers.factory import ProviderSnapshot
+from nanobot.providers.factory import ProviderSnapshot, make_provider
 from nanobot.providers.openai_codex_provider import _strip_model_prefix
 from nanobot.providers.registry import find_by_name
 
@@ -548,8 +550,8 @@ def test_openai_compat_provider_passes_model_through():
 
 
 def test_make_provider_uses_github_copilot_backend():
-    from nanobot.providers.factory import make_provider
     from nanobot.config.schema import Config
+    from nanobot.providers.factory import make_provider
 
     config = Config.model_validate(
         {
@@ -1519,6 +1521,10 @@ def test_gateway_daily_delivery_uses_latest_external_session(
     config.agents.defaults.daily_delivery.enabled = True
     config.gateway.heartbeat.enabled = False
     config.agents.defaults.workspace = str(tmp_path / "config-workspace")
+    workspace = Path(config.agents.defaults.workspace)
+    plan_path = workspace / DAILY_DELIVERY_PLAN_PATH
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text("# Daily Delivery Plan\n\n## Today Delivery Intent\n", encoding="utf-8")
     bus = MagicMock()
     bus.publish_outbound = AsyncMock()
     seen: dict[str, object] = {}
@@ -1662,7 +1668,7 @@ def test_gateway_daily_delivery_uses_latest_external_session(
     monkeypatch.setattr("nanobot.cron.service.CronService", _FakeCron)
     monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _FakeChannelManager)
     monkeypatch.setattr("asyncio.start_server", _fake_start_server)
-    monkeypatch.setattr("nanobot.utils.evaluator.evaluate_response", _capture_evaluate_response)
+    monkeypatch.setattr("nanobot.cli.commands.evaluate_response", _capture_evaluate_response)
 
     result = runner.invoke(app, ["gateway", "--config", str(config_file)])
 
@@ -1681,6 +1687,10 @@ def test_gateway_daily_delivery_uses_latest_external_session(
     assert "low-confidence" not in seen["delivery_prompt"]
     assert "use the first concrete candidate backup before suppressing delivery" in seen["delivery_prompt"]
     assert "inactive or says not to send anything today" in seen["delivery_prompt"]
+    state = json.loads((workspace / DAILY_DELIVERY_STATE_PATH).read_text(encoding="utf-8"))
+    assert state["lastPlanHash"] == hash_daily_delivery_plan(workspace)
+    assert state["lastStatus"] == "sent"
+    assert isinstance(state["lastExecutedAtMs"], int)
     assert seen["process_kwargs"]["session_key"] == DAILY_DELIVERY_JOB_ID
     assert seen["process_kwargs"]["channel"] == "telegram"
     assert seen["process_kwargs"]["chat_id"] == "user-9"
@@ -1697,6 +1707,168 @@ def test_gateway_daily_delivery_uses_latest_external_session(
             "_channel_delivery": True,
         }
     ]
+
+
+def test_gateway_daily_delivery_skips_when_plan_hash_unchanged(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_file = _write_instance_config(tmp_path)
+    config = Config()
+    config.agents.defaults.daily_delivery.enabled = True
+    config.gateway.heartbeat.enabled = False
+    config.agents.defaults.workspace = str(tmp_path / "config-workspace")
+    workspace = Path(config.agents.defaults.workspace)
+    plan_path = workspace / DAILY_DELIVERY_PLAN_PATH
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text("# Daily Delivery Plan\n\nunchanged\n", encoding="utf-8")
+    plan_hash = hash_daily_delivery_plan(workspace)
+    save_daily_delivery_state(
+        workspace,
+        {
+            "lastPlanHash": plan_hash,
+            "lastExecutedAtMs": 123,
+            "lastStatus": "sent",
+        },
+    )
+    bus = MagicMock()
+    bus.publish_outbound = AsyncMock()
+    seen: dict[str, object] = {"process_calls": 0}
+
+    monkeypatch.setattr("nanobot.config.loader.set_config_path", lambda _path: None)
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda _path=None: config)
+    monkeypatch.setattr("nanobot.config.loader.resolve_config_env_vars", lambda c: c)
+    monkeypatch.setattr("nanobot.cli.commands.sync_workspace_templates", lambda _path: None)
+    monkeypatch.setattr(
+        "nanobot.providers.factory.build_provider_snapshot",
+        lambda _config: _test_provider_snapshot(object(), _config),
+    )
+    monkeypatch.setattr(
+        "nanobot.providers.factory.load_provider_snapshot",
+        lambda _config_path=None: _test_provider_snapshot(object(), config),
+    )
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", lambda: bus)
+
+    class _FakeSessionManager:
+        def __init__(self, _workspace: Path) -> None:
+            return None
+
+        def list_sessions(self) -> list[dict[str, str]]:
+            raise AssertionError("daily delivery should skip before picking a target")
+
+        def flush_all(self) -> int:
+            return 0
+
+    monkeypatch.setattr("nanobot.session.manager.SessionManager", _FakeSessionManager)
+
+    class _FakeDream:
+        model = None
+        max_batch_size = 0
+        max_iterations = 0
+        annotate_line_ages = True
+
+        async def run(self) -> None:
+            return None
+
+    class _FakeDreamPlan(_FakeDream):
+        pass
+
+    class _FakeAgentLoop:
+        @classmethod
+        def from_config(cls, _config, bus=None, **extra):
+            return cls()
+
+        def __init__(self) -> None:
+            self.model = "test-model"
+            self.provider = object()
+            self.dream = _FakeDream()
+            self.dream_plan = _FakeDreamPlan()
+            self.sessions = _FakeSessionManager(Path("."))
+            self.tools = {}
+
+        async def run_dream_passes(self) -> dict[str, bool]:
+            return {"memory": False, "plan": False}
+
+        async def process_direct(self, *_args, **_kwargs):
+            seen["process_calls"] = int(seen["process_calls"]) + 1
+            raise AssertionError("unchanged PLAN.md should not execute the agent")
+
+        async def close_mcp(self) -> None:
+            return None
+
+        async def run(self) -> None:
+            await asyncio.Event().wait()
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCron:
+        def __init__(self, _store_path: Path) -> None:
+            self.on_job = None
+            seen["cron"] = self
+
+        async def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+        def status(self) -> dict[str, int]:
+            return {"jobs": 0}
+
+        def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
+            return []
+
+        def register_system_job(self, _job) -> None:
+            return None
+
+    class _FakeChannelManager:
+        def __init__(self, _config, _bus, **_kwargs) -> None:
+            self.enabled_channels = ["telegram"]
+
+        async def start_all(self) -> None:
+            await asyncio.Event().wait()
+
+        async def stop_all(self) -> None:
+            return None
+
+    class _FakeServer:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        async def serve_forever(self) -> None:
+            raise _StopGatewayError("stop")
+
+    async def _fake_start_server(handler, host: str, port: int):
+        return _FakeServer()
+
+    monkeypatch.setattr("nanobot.cli.commands.AgentLoop", _FakeAgentLoop)
+    monkeypatch.setattr("nanobot.cron.service.CronService", _FakeCron)
+    monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _FakeChannelManager)
+    monkeypatch.setattr("asyncio.start_server", _fake_start_server)
+
+    result = runner.invoke(app, ["gateway", "--config", str(config_file)])
+
+    assert result.exit_code == 0
+    cron = seen["cron"]
+    assert isinstance(cron, _FakeCron)
+    assert cron.on_job is not None
+
+    response = asyncio.run(
+        cron.on_job(CronJob(id=DAILY_DELIVERY_JOB_ID, name=DAILY_DELIVERY_JOB_NAME, payload=CronPayload(kind="system_event")))
+    )
+
+    assert response is None
+    assert seen["process_calls"] == 0
+    bus.publish_outbound.assert_not_awaited()
+    state = json.loads((workspace / DAILY_DELIVERY_STATE_PATH).read_text(encoding="utf-8"))
+    assert state["lastPlanHash"] == plan_hash
+    assert state["lastStatus"] == "skipped"
+    assert state["lastSkipReason"] == "plan_unchanged"
+    assert state["lastExecutedAtMs"] == 123
+    assert isinstance(state["lastSkippedAtMs"], int)
 
 
 def test_gateway_auto_shifts_daily_delivery_away_from_existing_cron_job(

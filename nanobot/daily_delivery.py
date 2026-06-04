@@ -2,25 +2,87 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Iterable
+from typing import Any
+from uuid import uuid4
 
 from nanobot.cron.service import _compute_next_run
 from nanobot.cron.types import CronJob, CronSchedule
-
 
 DAILY_DELIVERY_SKILL_NAME = "daily-channel-delivery"
 DAILY_DELIVERY_DIR = Path("skills") / DAILY_DELIVERY_SKILL_NAME
 DAILY_DELIVERY_SKILL_PATH = DAILY_DELIVERY_DIR / "SKILL.md"
 DAILY_DELIVERY_PLAN_PATH = DAILY_DELIVERY_DIR / "PLAN.md"
+DAILY_DELIVERY_STATE_PATH = DAILY_DELIVERY_DIR / ".delivery_state.json"
 
 DAILY_DELIVERY_JOB_ID = "daily-delivery"
 DAILY_DELIVERY_JOB_NAME = "daily-delivery"
 
 DAILY_DELIVERY_SUPPRESS_RESPONSE = "All clear."
+DAILY_DELIVERY_STATE_VERSION = 1
+DAILY_DELIVERY_PLAN_MISSING_HASH = "missing"
 DAILY_DELIVERY_AUTO_SHIFT_STEP_MINUTES = 10
 DAILY_DELIVERY_AUTO_SHIFT_MAX_MINUTES = 180
 DAILY_DELIVERY_CONFLICT_LOOKAHEAD = 30
+
+
+def hash_daily_delivery_plan(workspace_path: Path) -> str:
+    """Return a stable hash for the workspace daily-delivery PLAN.md."""
+    try:
+        content = (workspace_path / DAILY_DELIVERY_PLAN_PATH).read_bytes()
+    except OSError:
+        return DAILY_DELIVERY_PLAN_MISSING_HASH
+    return f"sha256:{hashlib.sha256(content).hexdigest()}"
+
+
+def load_daily_delivery_state(workspace_path: Path) -> dict[str, Any]:
+    """Load the runtime delivery state, tolerating missing or corrupt files."""
+    state_path = workspace_path / DAILY_DELIVERY_STATE_PATH
+    try:
+        raw = state_path.read_text(encoding="utf-8")
+    except OSError:
+        return {"version": DAILY_DELIVERY_STATE_VERSION}
+
+    try:
+        state = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"version": DAILY_DELIVERY_STATE_VERSION}
+    if not isinstance(state, dict):
+        return {"version": DAILY_DELIVERY_STATE_VERSION}
+
+    state = dict(state)
+    state["version"] = DAILY_DELIVERY_STATE_VERSION
+    return state
+
+
+def save_daily_delivery_state(workspace_path: Path, state: Mapping[str, Any]) -> None:
+    """Atomically persist the runtime delivery state under the skill directory."""
+    state_path = workspace_path / DAILY_DELIVERY_STATE_PATH
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = dict(state)
+    payload["version"] = DAILY_DELIVERY_STATE_VERSION
+    data = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+    tmp_path = state_path.with_name(f"{state_path.name}.{os.getpid()}.{uuid4().hex}.tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    tmp_path.replace(state_path)
+
+    try:
+        dir_fd = os.open(state_path.parent, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def _shift_fixed_clock_cron(expr: str, offset_minutes: int) -> str | None:

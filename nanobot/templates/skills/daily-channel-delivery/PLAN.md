@@ -1,8 +1,8 @@
 ---
-version: 1
-last_reviewed_at: ""
+version: 2
+last_strategy_reviewed_at: ""
+last_daily_reviewed_on: ""
 status: inactive
-active_delivery_id: ""
 confidence: low
 ---
 
@@ -10,11 +10,10 @@ confidence: low
 
 - This file is consumed by `skills/daily-channel-delivery/SKILL.md`.
 - Keep this structure stable.
-- Do not store the final user-facing message here.
-- Store durable strategy, not transient data.
-- Active delivery may be an update, a contextual check-in, or an offer of help.
+- Store durable strategy and today's delivery intent.
+- Do not store the final drafted user-facing message here.
 
-# Dream Managed State
+# Strategy Layer
 
 ## User Interest Model
 
@@ -26,36 +25,60 @@ confidence: low
 
 - (none yet)
 
-## Active Delivery
+## Delivery Principles
 
-- id:
-- why_now:
+- Chinese by default; address the user according to `USER.md`.
+- Keep proactive delivery short, specific, and easy to reply to.
+- Prefer recent context over generic reminders.
+- Avoid generic check-ins like "how are you" unless tied to concrete context.
+- Low confidence is allowed, but use a cautious offer instead of overclaiming.
+
+## Delivery Type Rotation
+
+- contextual_followup: continue a recent topic with a useful next step.
+- useful_brief: provide a compact data-driven update.
+- curiosity_hook: surface a small observation worth discussing.
+- action_offer: offer to do one concrete thing for the user.
+- gentle_checkin: ask a context-aware question, not a generic greeting.
+
+## Topic Rotation Rules
+
+- Do not use the same topic two days in a row unless the user continued it.
+- Do not duplicate a separate weather job unless weather is the clear user need.
+- Workday mornings may prioritize market or project context; weekends may prioritize life, family, or local plans.
+- Prefer topics with available skills or stable data sources.
+
+# Daily Intent Layer
+
+## Today Delivery Intent
+
+Required exact keys. Do not use aliases such as `type`, `intent`, or `goal`.
+
+- date:
+- status: inactive
+- delivery_type:
+- topic:
+- why_today:
+- signal_source:
 - audience:
-- language:
 - tone:
-
-### Inputs
-
-- (none yet)
-
-### Fetch Policy
-
-1. Gather fresh information at send time.
-2. Use referenced skills or tools only when the active delivery needs them.
-
-### References
-
-- (optional skill paths or data source notes)
-
-### Output Contract
-
-- Keep it concise and user-facing.
+- message_goal:
+- hook:
+- reply_question:
+- fetch_policy:
+- output_contract: 1-3 concise user-facing sentences, ending with one concrete reply question.
 
 ## Candidate Backups
 
 - Candidate backups should be concrete enough to execute if needed.
-- If `Active Delivery` is empty or incomplete, the executor may use the first concrete candidate backup for that run.
+- If `Today Delivery Intent` is empty or incomplete, the executor may use the first concrete candidate backup for that run.
 - (none yet)
+
+## Recent Delivery State
+
+| date | delivery_type | topic | note |
+| --- | --- | --- | --- |
+| (none yet) | | | |
 
 ## Suppress Rules
 

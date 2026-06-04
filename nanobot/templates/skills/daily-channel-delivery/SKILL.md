@@ -16,8 +16,8 @@ Use this skill when a scheduled job asks you to produce one proactive delivery f
 
 1. Read `skills/daily-channel-delivery/PLAN.md`.
 2. If the plan is missing or inactive, return exactly `All clear.` and stop.
-3. Prefer the `Active Delivery` section when it contains a concrete delivery.
-4. If `Active Delivery` is empty, incomplete, or has no usable `id`, scan `Candidate Backups`. If the first concrete candidate backup is executable, treat it as a provisional delivery for this run instead of returning `All clear.`.
+3. Prefer `Today Delivery Intent` when its `date` is today, `status` is ready/active, and it contains the exact V2 keys `delivery_type`, `topic`, `message_goal`, `hook`, `reply_question`, `fetch_policy`, and `output_contract`.
+4. If `Today Delivery Intent` is missing, stale, inactive, or incomplete, scan `Candidate Backups`. If the first concrete candidate backup is executable, treat it as a provisional delivery for this run instead of returning `All clear.`.
 5. Follow the selected delivery's topic, fetch policy, and output contract.
 6. If the selected delivery references another skill or data source, read it before acting.
 7. Gather fresh information at run time. Do not rely on stale values stored in the plan.
@@ -29,8 +29,10 @@ Use this skill when a scheduled job asks you to produce one proactive delivery f
 - Do not quote the plan or expose raw commands unless the plan explicitly requires it.
 - Do not emit internal reasoning, progress, or file names.
 - Do not rewrite the plan while executing it.
-- If `Active Delivery` is unusable but a concrete candidate backup exists, prefer the first concrete candidate backup over returning `All clear.`.
-- If neither `Active Delivery` nor any candidate backup is concrete enough to execute, return exactly `All clear.`.
+- The best delivery often ends with one concrete, easy-to-answer question.
+- Do not treat `type`, `intent`, or `goal` as valid `Today Delivery Intent` keys. They are invalid aliases.
+- If daily intent is unusable but a concrete candidate backup exists, prefer the first concrete candidate backup over returning `All clear.`.
+- If neither daily intent nor any candidate backup is concrete enough to execute, return exactly `All clear.`.
 - If the plan says no delivery is needed today, return exactly `All clear.`.
 - Keep the final message concise and useful.
 

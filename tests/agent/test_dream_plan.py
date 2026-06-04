@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -56,12 +57,97 @@ def _make_run_result(
     )
 
 
+def _strict_today_plan(date: str) -> str:
+    return (
+        "---\n"
+        f'last_daily_reviewed_on: "{date}"\n'
+        "status: active\n"
+        "---\n\n"
+        "# Daily Intent Layer\n\n"
+        "## Today Delivery Intent\n\n"
+        f'- date: "{date}"\n'
+        "- status: ready\n"
+        "- delivery_type: action_offer\n"
+        "- topic: market follow-up\n"
+        "- why_today: user recently discussed markets\n"
+        "- signal_source: memory\n"
+        "- audience: weixin user\n"
+        "- tone: concise\n"
+        "- message_goal: offer one useful next step\n"
+        "- hook: market structure may be worth tracking\n"
+        "- reply_question: 要不要我帮你看一下ETF放量？\n"
+        "- fetch_policy: use available market skills if needed\n"
+        "- output_contract: 1-3 concise sentences ending with one concrete question\n"
+    )
+
+
 class TestDreamPlanRun:
     async def test_noop_when_no_unprocessed_history(self, dream_plan, mock_provider, mock_runner):
+        today = datetime.now().strftime("%Y-%m-%d")
+        plan_path = dream_plan.store.workspace / DAILY_DELIVERY_PLAN_PATH
+        plan_path.write_text(
+            _strict_today_plan(today),
+            encoding="utf-8",
+        )
+
         result = await dream_plan.run(default_since_cursor=0)
         assert result is False
         mock_provider.chat_with_retry.assert_not_called()
         mock_runner.run.assert_not_called()
+
+    async def test_same_day_invalid_today_intent_schema_refreshes(
+        self, dream_plan, mock_provider, mock_runner, store,
+    ):
+        today = datetime.now().strftime("%Y-%m-%d")
+        plan_path = store.workspace / DAILY_DELIVERY_PLAN_PATH
+        plan_path.write_text(
+            "---\n"
+            f'last_daily_reviewed_on: "{today}"\n'
+            "status: active\n"
+            "---\n\n"
+            "# Daily Intent Layer\n\n"
+            "## Today Delivery Intent\n\n"
+            "- type: action_offer\n"
+            "- intent: ask whether to monitor ETF volume\n",
+            encoding="utf-8",
+        )
+        mock_provider.chat_with_retry.return_value = MagicMock(
+            content="[PLAN] rewrite today's intent using strict V2 keys",
+        )
+        mock_runner.run = AsyncMock(return_value=_make_run_result())
+
+        result = await dream_plan.run(default_since_cursor=0)
+
+        assert result is True
+        mock_provider.chat_with_retry.assert_called_once()
+        user_msg = mock_provider.chat_with_retry.call_args.kwargs["messages"][1]["content"]
+        assert "## Review Mode\ndaily_refresh" in user_msg
+
+    async def test_daily_refresh_without_unprocessed_history_when_plan_is_stale(
+        self, dream_plan, mock_provider, mock_runner, store,
+    ):
+        plan_path = store.workspace / DAILY_DELIVERY_PLAN_PATH
+        plan_path.write_text(
+            '---\nlast_daily_reviewed_on: "2000-01-01"\n'
+            "status: active\n---\n\n# Daily Intent Layer\n",
+            encoding="utf-8",
+        )
+        mock_provider.chat_with_retry.return_value = MagicMock(
+            content="[PLAN] refresh today's intent with a cautious market follow-up",
+        )
+        mock_runner.run = AsyncMock(return_value=_make_run_result(
+            tool_events=[{"name": "edit_file", "status": "ok", "detail": "updated"}],
+        ))
+
+        result = await dream_plan.run(default_since_cursor=0)
+
+        assert result is True
+        mock_provider.chat_with_retry.assert_called_once()
+        mock_runner.run.assert_called_once()
+        assert store.get_last_dream_plan_cursor() == 0
+        user_msg = mock_provider.chat_with_retry.call_args.kwargs["messages"][1]["content"]
+        assert "## Review Mode\ndaily_refresh" in user_msg
+        assert "no new archived history since cursor 0" in user_msg
 
     async def test_advances_dream_plan_cursor(self, dream_plan, mock_provider, mock_runner, store):
         store.append_history("User often wants a concise market opener.")
@@ -128,6 +214,9 @@ class TestDreamPlanRun:
         system_msg = mock_provider.chat_with_retry.call_args.kwargs["messages"][0]["content"]
         assert "contextual check-in" in system_msg
         assert "offer of help" in system_msg
+        assert "exact V2 keys" in system_msg
+        assert "`delivery_type`" in system_msg
+        assert "Do not use aliases" in system_msg
         assert "candidate backup" in system_msg
         assert "Do not output [FILE], [FILE-REMOVE], or [SKILL] lines." in system_msg
 

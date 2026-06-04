@@ -1,6 +1,14 @@
 from nanobot.config.schema import DailyDeliveryConfig
 from nanobot.cron.types import CronJob, CronPayload, CronSchedule
-from nanobot.daily_delivery import resolve_daily_delivery_schedule
+from nanobot.daily_delivery import (
+    DAILY_DELIVERY_PLAN_MISSING_HASH,
+    DAILY_DELIVERY_PLAN_PATH,
+    DAILY_DELIVERY_STATE_PATH,
+    hash_daily_delivery_plan,
+    load_daily_delivery_state,
+    resolve_daily_delivery_schedule,
+    save_daily_delivery_state,
+)
 
 
 def _job(job_id: str, expr: str, *, kind: str = "agent_turn", enabled: bool = True) -> CronJob:
@@ -18,6 +26,29 @@ def test_daily_delivery_config_defaults_to_disabled_daily_cron() -> None:
 
     assert cfg.enabled is False
     assert cfg.cron == "0 8 * * *"
+
+
+def test_daily_delivery_plan_hash_and_runtime_state(tmp_path) -> None:
+    assert hash_daily_delivery_plan(tmp_path) == DAILY_DELIVERY_PLAN_MISSING_HASH
+    assert load_daily_delivery_state(tmp_path) == {"version": 1}
+
+    plan_path = tmp_path / DAILY_DELIVERY_PLAN_PATH
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text("today: ask how the user is doing\n", encoding="utf-8")
+    plan_hash = hash_daily_delivery_plan(tmp_path)
+
+    assert plan_hash.startswith("sha256:")
+
+    save_daily_delivery_state(
+        tmp_path,
+        {
+            "lastPlanHash": plan_hash,
+            "lastStatus": "sent",
+        },
+    )
+
+    assert (tmp_path / DAILY_DELIVERY_STATE_PATH).exists()
+    assert load_daily_delivery_state(tmp_path)["lastPlanHash"] == plan_hash
 
 
 def test_daily_delivery_builds_cron_schedule_with_timezone() -> None:

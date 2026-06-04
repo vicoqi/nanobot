@@ -1190,6 +1190,26 @@ class DreamPlan:
     _USER_FILE_MAX_CHARS = 16_000
     _PLAN_FILE_MAX_CHARS = 16_000
     _HISTORY_ENTRY_PREVIEW_MAX_CHARS = 4_000
+    _DAILY_REVIEW_RE = re.compile(r'(?m)^last_daily_reviewed_on:\s*"?([^"\n]*)"?\s*$')
+    _TODAY_INTENT_RE = re.compile(
+        r"(?ms)^## Today Delivery Intent\s*\n(?P<section>.*?)(?=^## |\Z)"
+    )
+    _TODAY_INTENT_REQUIRED_KEYS = (
+        "date",
+        "status",
+        "delivery_type",
+        "topic",
+        "why_today",
+        "signal_source",
+        "audience",
+        "tone",
+        "message_goal",
+        "hook",
+        "reply_question",
+        "fetch_policy",
+        "output_contract",
+    )
+    _TODAY_INTENT_INVALID_KEYS = ("type", "intent", "goal", "language")
 
     def __init__(
         self,
@@ -1228,6 +1248,36 @@ class DreamPlan:
         tools.register(WriteFileTool(workspace=workspace, allowed_dir=plan_path, file_states=file_states))
         return tools
 
+    @classmethod
+    def _last_daily_reviewed_on(cls, plan_text: str) -> str:
+        match = cls._DAILY_REVIEW_RE.search(plan_text)
+        return match.group(1).strip() if match else ""
+
+    @classmethod
+    def _needs_daily_refresh(cls, plan_text: str, current_date: str) -> bool:
+        if not plan_text.strip() or plan_text.strip() == "(missing)":
+            return True
+        if cls._last_daily_reviewed_on(plan_text) != current_date:
+            return True
+        return not cls._has_strict_today_intent_schema(plan_text)
+
+    @classmethod
+    def _has_strict_today_intent_schema(cls, plan_text: str) -> bool:
+        match = cls._TODAY_INTENT_RE.search(plan_text)
+        if not match:
+            return False
+        section = match.group("section")
+        for key in cls._TODAY_INTENT_INVALID_KEYS:
+            if re.search(rf"(?m)^-\s+{re.escape(key)}\s*:", section):
+                return False
+        if re.search(r"(?m)^###\s+(Inputs|Fetch Policy|Output Contract)\s*$", section):
+            return False
+        for key in cls._TODAY_INTENT_REQUIRED_KEYS:
+            field = re.search(rf"(?m)^-\s+{re.escape(key)}\s*:\s*(.+?)\s*$", section)
+            if not field or not field.group(1).strip():
+                return False
+        return True
+
     async def run(self, *, default_since_cursor: int | None = None) -> bool:
         """Process unprocessed history entries for PLAN.md only."""
         if not self.store.has_last_dream_plan_cursor():
@@ -1241,23 +1291,42 @@ class DreamPlan:
         else:
             last_cursor = self.store.get_last_dream_plan_cursor()
 
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        plan_path = self.store.workspace / DAILY_DELIVERY_PLAN_PATH
+        current_plan = truncate_text(
+            self.store.read_file(plan_path) or "(missing)",
+            self._PLAN_FILE_MAX_CHARS,
+        )
+        needs_daily_refresh = self._needs_daily_refresh(current_plan, current_date)
         entries = self.store.read_unprocessed_history(since_cursor=last_cursor)
-        if not entries:
+        if not entries and not needs_daily_refresh:
             return False
 
         batch = entries[: self.max_batch_size]
-        logger.info(
-            "DreamPlan: processing {} entries (cursor {}→{}), batch={}",
-            len(entries), last_cursor, batch[-1]["cursor"], len(batch),
-        )
+        review_mode = "history_update" if batch else "daily_refresh"
+        if batch:
+            logger.info(
+                "DreamPlan: processing {} entries (cursor {}→{}), batch={}",
+                len(entries), last_cursor, batch[-1]["cursor"], len(batch),
+            )
+        else:
+            logger.info(
+                "DreamPlan: daily refresh for {} (cursor {}, no new history)",
+                current_date, last_cursor,
+            )
 
-        history_text = "\n".join(
-            f"[{e['timestamp']}] "
-            f"{truncate_text(e['content'], self._HISTORY_ENTRY_PREVIEW_MAX_CHARS)}"
-            for e in batch
-        )
+        if batch:
+            history_text = "\n".join(
+                f"[{e['timestamp']}] "
+                f"{truncate_text(e['content'], self._HISTORY_ENTRY_PREVIEW_MAX_CHARS)}"
+                for e in batch
+            )
+        else:
+            history_text = (
+                f"(no new archived history since cursor {last_cursor}; "
+                "refresh today's delivery intent from current USER.md, MEMORY.md, and PLAN.md)"
+            )
 
-        current_date = datetime.now().strftime("%Y-%m-%d")
         current_memory = truncate_text(
             self.store.read_memory() or "(empty)",
             self._MEMORY_FILE_MAX_CHARS,
@@ -1266,13 +1335,9 @@ class DreamPlan:
             self.store.read_user() or "(empty)",
             self._USER_FILE_MAX_CHARS,
         )
-        plan_path = self.store.workspace / DAILY_DELIVERY_PLAN_PATH
-        current_plan = truncate_text(
-            self.store.read_file(plan_path) or "(missing)",
-            self._PLAN_FILE_MAX_CHARS,
-        )
 
         file_context = (
+            f"## Review Mode\n{review_mode}\n\n"
             f"## Current Date\n{current_date}\n\n"
             f"## Current USER.md ({len(current_user)} chars)\n{current_user}\n\n"
             f"## Current MEMORY.md ({len(current_memory)} chars)\n{current_memory}\n\n"
@@ -1341,13 +1406,24 @@ class DreamPlan:
             result = None
 
         if result and result.stop_reason == "completed":
-            new_cursor = batch[-1]["cursor"]
-            self.store.set_last_dream_plan_cursor(new_cursor)
-            logger.info(
-                "DreamPlan done: {} change(s), cursor advanced to {}",
-                len([event for event in (result.tool_events or []) if event["status"] == "ok"]),
-                new_cursor,
-            )
+            ok_events = len([
+                event for event in (result.tool_events or [])
+                if event["status"] == "ok"
+            ])
+            if batch:
+                new_cursor = batch[-1]["cursor"]
+                self.store.set_last_dream_plan_cursor(new_cursor)
+                logger.info(
+                    "DreamPlan done: {} change(s), cursor advanced to {}",
+                    ok_events,
+                    new_cursor,
+                )
+            else:
+                logger.info(
+                    "DreamPlan daily refresh done: {} change(s), cursor remains {}",
+                    ok_events,
+                    last_cursor,
+                )
         else:
             reason = result.stop_reason if result else "exception"
             logger.warning(
