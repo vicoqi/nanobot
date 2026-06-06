@@ -1,6 +1,7 @@
 import asyncio
 import json
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -77,6 +78,87 @@ def test_save_and_load_state_persists_context_tokens(tmp_path) -> None:
 
     assert restored._load_state() is True
     assert restored._context_tokens == {"wx-user": "ctx-1"}
+
+
+@pytest.mark.asyncio
+async def test_start_restores_state_even_when_config_token_is_present(tmp_path) -> None:
+    bus = MessageBus()
+    state = {
+        "token": "config-token",
+        "get_updates_buf": "cursor-1",
+        "context_tokens": {"wx-user": "ctx-1"},
+        "typing_tickets": {"wx-user": {"ticket": "typing-1"}},
+        "base_url": "https://state.example",
+    }
+    (tmp_path / "account.json").write_text(json.dumps(state), encoding="utf-8")
+
+    channel = WeixinChannel(
+        WeixinConfig(
+            enabled=True,
+            allow_from=["*"],
+            token="config-token",
+            state_dir=str(tmp_path),
+        ),
+        bus,
+    )
+
+    async def _stop_after_first_poll() -> None:
+        channel._running = False
+
+    channel._poll_once = AsyncMock(side_effect=_stop_after_first_poll)
+
+    try:
+        await channel.start()
+    finally:
+        if channel._client is not None:
+            await channel._client.aclose()
+            channel._client = None
+
+    assert channel._token == "config-token"
+    assert channel._get_updates_buf == "cursor-1"
+    assert channel._context_tokens == {"wx-user": "ctx-1"}
+    assert channel._typing_tickets == {"wx-user": {"ticket": "typing-1"}}
+    assert channel.config.base_url == "https://state.example"
+
+
+@pytest.mark.asyncio
+async def test_start_clears_cached_session_state_when_config_token_changes(tmp_path) -> None:
+    bus = MessageBus()
+    state = {
+        "token": "old-token",
+        "get_updates_buf": "cursor-1",
+        "context_tokens": {"wx-user": "ctx-1"},
+        "typing_tickets": {"wx-user": {"ticket": "typing-1"}},
+        "base_url": "https://state.example",
+    }
+    (tmp_path / "account.json").write_text(json.dumps(state), encoding="utf-8")
+
+    channel = WeixinChannel(
+        WeixinConfig(
+            enabled=True,
+            allow_from=["*"],
+            token="new-token",
+            state_dir=str(tmp_path),
+        ),
+        bus,
+    )
+
+    async def _stop_after_first_poll() -> None:
+        channel._running = False
+
+    channel._poll_once = AsyncMock(side_effect=_stop_after_first_poll)
+
+    try:
+        await channel.start()
+    finally:
+        if channel._client is not None:
+            await channel._client.aclose()
+            channel._client = None
+
+    assert channel._token == "new-token"
+    assert channel._get_updates_buf == ""
+    assert channel._context_tokens == {}
+    assert channel._typing_tickets == {}
 
 
 @pytest.mark.asyncio
@@ -374,6 +456,7 @@ async def test_send_uses_typing_start_and_cancel_when_ticket_available() -> None
     channel._client = object()
     channel._token = "token"
     channel._context_tokens["wx-user"] = "ctx-typing"
+    channel._context_token_at["wx-user"] = time.time()
     channel._send_text = AsyncMock()
     channel._api_post = AsyncMock(
         side_effect=[
@@ -402,6 +485,7 @@ async def test_send_still_sends_text_when_typing_ticket_missing() -> None:
     channel._client = object()
     channel._token = "token"
     channel._context_tokens["wx-user"] = "ctx-no-ticket"
+    channel._context_token_at["wx-user"] = time.time()
     channel._send_text = AsyncMock()
     channel._api_post = AsyncMock(return_value={"ret": 1, "errmsg": "no config"})
 
@@ -737,6 +821,31 @@ async def test_send_media_falls_back_to_upload_param_url(tmp_path) -> None:
     cdn_url = cdn_post.await_args_list[0].args[0]
     assert cdn_url.startswith(f"{channel.config.cdn_base_url}/upload?encrypted_query_param=enc-need-fallback")
     assert "&filekey=" in cdn_url
+
+
+@pytest.mark.asyncio
+async def test_send_media_invalidates_context_token_on_ret_minus_two(tmp_path) -> None:
+    channel, _bus = _make_channel()
+
+    media_file = tmp_path / "photo.jpg"
+    media_file.write_bytes(b"hello-weixin")
+
+    channel._context_tokens["wx-user"] = "ctx-stale"
+    channel._context_token_at["wx-user"] = time.time()
+    cdn_post = AsyncMock(return_value=_DummyHttpResponse(headers={"x-encrypted-param": "dl-param"}))
+    channel._client = SimpleNamespace(post=cdn_post)
+    channel._api_post = AsyncMock(
+        side_effect=[
+            {"upload_full_url": "https://upload-full.example.test/path?foo=bar"},
+            {"ret": -2, "errcode": 0},
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="WeChat send media error.*ret=-2.*errcode=0"):
+        await channel._send_media_file("wx-user", str(media_file), "ctx-stale")
+
+    assert "wx-user" not in channel._context_tokens
+    assert "wx-user" not in channel._context_token_at
 
 
 @pytest.mark.asyncio
@@ -1254,3 +1363,544 @@ async def test_send_text_succeeds_on_zero_errcode() -> None:
     await channel._send_text("wx-user", "hello", "ctx-ok")
 
     channel._api_post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_text_raises_on_nonzero_ret_even_when_errcode_zero() -> None:
+    """_send_text must raise when the API returns ret != 0, even if errcode is 0.
+
+    The iLink API signals failure through either field.  Checking only errcode
+    caused silent message drops (responses generated but never delivered).
+    """
+    channel, _bus = _make_channel()
+    channel._client = object()
+    channel._token = "token"
+    channel._api_post = AsyncMock(
+        return_value={"ret": -100, "errcode": 0, "errmsg": "internal error"}
+    )
+
+    with pytest.raises(RuntimeError, match="WeChat send text error.*ret=-100.*errcode=0"):
+        await channel._send_text("wx-user", "hello", "ctx-ok")
+
+    channel._api_post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_text_invalidates_context_token_on_ret_minus_two() -> None:
+    channel, _bus = _make_channel()
+    channel._client = object()
+    channel._token = "token"
+    channel._context_tokens["wx-user"] = "ctx-stale"
+    channel._context_token_at["wx-user"] = time.time()
+    channel._typing_tickets["wx-user"] = {"ticket": "typing-ticket"}
+    channel._api_post = AsyncMock(return_value={"ret": -2, "errcode": 0})
+
+    with pytest.raises(RuntimeError, match="WeChat send text error.*ret=-2.*errcode=0"):
+        await channel._send_text("wx-user", "hello", "ctx-stale")
+
+    assert "wx-user" not in channel._context_tokens
+    assert "wx-user" not in channel._context_token_at
+    assert "wx-user" not in channel._typing_tickets
+
+
+# ---------------------------------------------------------------------------
+# Tests for _poll_once not silently dropping messages on processing errors
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poll_once_logs_exception_on_process_message_failure(monkeypatch) -> None:
+    """When _process_message raises, _poll_once must log the error and continue
+    processing remaining messages instead of silently swallowing the exception."""
+    channel, _bus = _make_channel()
+    channel._client = SimpleNamespace(timeout=None)
+    channel._token = "token"
+    channel._get_updates_buf = "old-buf"
+
+    calls = []
+    logged_messages: list[str] = []
+
+    async def _failing_process(msg: dict) -> None:
+        calls.append(msg.get("message_id"))
+        if msg.get("message_id") == "msg-1":
+            raise RuntimeError("processing failed")
+
+    channel._process_message = _failing_process  # type: ignore[method-assign]
+
+    monkeypatch.setattr(
+        channel.logger,
+        "exception",
+        lambda message, *args, **kwargs: logged_messages.append(str(message)),
+    )
+
+    channel._api_post = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "ret": 0,
+            "errcode": 0,
+            "get_updates_buf": "new-buf",
+            "msgs": [
+                {"message_id": "msg-1", "message_type": 1},
+                {"message_id": "msg-2", "message_type": 1},
+            ],
+        }
+    )
+
+    await channel._poll_once()
+
+    # Both messages should have been attempted
+    assert calls == ["msg-1", "msg-2"]
+    # Buffer should still advance (already updated before processing)
+    assert channel._get_updates_buf == "new-buf"
+    # Error should be logged
+    assert any("Failed to process WeChat message" in m for m in logged_messages)
+
+
+@pytest.mark.asyncio
+async def test_poll_loop_logs_exception_and_continues_on_poll_failure(monkeypatch) -> None:
+    """When _poll_once raises a non-timeout exception, the start() loop must log
+    the error and continue polling instead of exiting silently."""
+    channel, _bus = _make_channel()
+    channel._client = object()
+    channel._token = "token"
+    channel.config.token = "token"  # skip QR login in start()
+    channel._running = True
+
+    call_count = 0
+    logged_messages: list[str] = []
+
+    async def _failing_poll() -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("poll exploded")
+        channel._running = False  # Stop after second call
+
+    channel._poll_once = _failing_poll  # type: ignore[method-assign]
+
+    monkeypatch.setattr(
+        channel.logger,
+        "exception",
+        lambda message, *args, **kwargs: logged_messages.append(str(message)),
+    )
+
+    # Use a tiny retry delay so the test finishes quickly
+    original_retry = weixin_mod.RETRY_DELAY_S
+    weixin_mod.RETRY_DELAY_S = 0.01
+    try:
+        await channel.start()
+    finally:
+        weixin_mod.RETRY_DELAY_S = original_retry
+
+    assert call_count == 2
+    assert any("WeChat poll loop error" in m for m in logged_messages)
+
+
+# ---------------------------------------------------------------------------
+# Tool-hint buffering
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_buffer_single_tool_hint_not_sent_immediately() -> None:
+    channel, _bus = _make_channel()
+    channel._client = object()
+    channel._token = "token"
+    channel.send_tool_hints = True
+    channel._context_tokens["wx-user"] = "ctx-1"
+    channel._context_token_at["wx-user"] = time.time()
+    channel._send_text = AsyncMock()
+
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "Using tool",
+                "media": [],
+                "metadata": {"_progress": True, "_tool_hint": True},
+            },
+        )()
+    )
+
+    channel._send_text.assert_not_awaited()
+    assert channel._pending_tool_hints["wx-user"] == ["Using tool"]
+
+
+@pytest.mark.asyncio
+async def test_buffer_multiple_tool_hints_flushed_on_final_answer() -> None:
+    channel, _bus = _make_channel()
+    channel._client = object()
+    channel._token = "token"
+    channel.send_tool_hints = True
+    channel._context_tokens["wx-user"] = "ctx-1"
+    channel._context_token_at["wx-user"] = time.time()
+    channel._send_text = AsyncMock()
+
+    for hint in ["tool1", "tool2"]:
+        await channel.send(
+            type(
+                "Msg",
+                (),
+                {
+                    "chat_id": "wx-user",
+                    "content": hint,
+                    "media": [],
+                    "metadata": {"_progress": True, "_tool_hint": True},
+                },
+            )()
+        )
+
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "Done",
+                "media": [],
+                "metadata": {},
+            },
+        )()
+    )
+
+    assert channel._send_text.await_count == 2
+    channel._send_text.assert_any_await("wx-user", "tool1\n\ntool2", "ctx-1")
+    channel._send_text.assert_any_await("wx-user", "Done", "ctx-1")
+    assert "wx-user" not in channel._pending_tool_hints
+
+
+@pytest.mark.asyncio
+async def test_thought_progress_flushes_tool_hints() -> None:
+    """Thoughts are visible progress messages and must act as separators,
+    flushing buffered tool hints before they are sent."""
+    channel, _bus = _make_channel()
+    channel._client = object()
+    channel._token = "token"
+    channel.send_tool_hints = True
+    channel._context_tokens["wx-user"] = "ctx-1"
+    channel._context_token_at["wx-user"] = time.time()
+    channel._send_text = AsyncMock()
+
+    # Buffer a tool hint
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "search 'foo'",
+                "media": [],
+                "metadata": {"_progress": True, "_tool_hint": True},
+            },
+        )()
+    )
+
+    # Send a thought — progress but not a tool_hint.
+    # It must act as a separator and flush the buffered hint.
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "Let me think...",
+                "media": [],
+                "metadata": {"_progress": True},
+            },
+        )()
+    )
+
+    # The buffered hint was flushed before the thought was sent.
+    channel._send_text.assert_any_await("wx-user", "search 'foo'", "ctx-1")
+    channel._send_text.assert_any_await("wx-user", "Let me think...", "ctx-1")
+    assert "wx-user" not in channel._pending_tool_hints
+
+    # Final answer arrives with nothing left to flush.
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "Done",
+                "media": [],
+                "metadata": {},
+            },
+        )()
+    )
+
+    assert channel._send_text.await_count == 3
+    channel._send_text.assert_any_await("wx-user", "Done", "ctx-1")
+
+
+@pytest.mark.asyncio
+async def test_reasoning_delta_does_not_flush_tool_hints() -> None:
+    """Reasoning deltas are invisible in WeChat and must NOT flush buffered
+    tool hints — otherwise hints separated only by hidden reasoning would
+    fail to coalesce."""
+    channel, _bus = _make_channel()
+    channel._client = object()
+    channel._token = "token"
+    channel.send_tool_hints = True
+    channel._context_tokens["wx-user"] = "ctx-1"
+    channel._context_token_at["wx-user"] = time.time()
+    channel._send_text = AsyncMock()
+
+    # Buffer a tool hint
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "search 'foo'",
+                "media": [],
+                "metadata": {"_progress": True, "_tool_hint": True},
+            },
+        )()
+    )
+
+    # Send a reasoning delta — invisible in WeChat, must NOT flush
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "Thinking step 1...",
+                "media": [],
+                "metadata": {"_progress": True, "_reasoning_delta": True},
+            },
+        )()
+    )
+
+    # Reasoning is invisible; hint stays buffered, _send_text not called
+    channel._send_text.assert_not_awaited()
+    assert channel._pending_tool_hints["wx-user"] == ["search 'foo'"]
+
+    # Final answer flushes the buffered hint
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "Done",
+                "media": [],
+                "metadata": {},
+            },
+        )()
+    )
+
+    channel._send_text.assert_any_await("wx-user", "search 'foo'", "ctx-1")
+    channel._send_text.assert_any_await("wx-user", "Done", "ctx-1")
+    assert "wx-user" not in channel._pending_tool_hints
+
+
+@pytest.mark.asyncio
+async def test_empty_progress_message_does_not_flush_tool_hints() -> None:
+    """Empty progress messages (e.g. after_iteration tool_events) have no
+    visible content and must NOT act as separators."""
+    channel, _bus = _make_channel()
+    channel._client = object()
+    channel._token = "token"
+    channel.send_tool_hints = True
+    channel._context_tokens["wx-user"] = "ctx-1"
+    channel._context_token_at["wx-user"] = time.time()
+    channel._send_text = AsyncMock()
+
+    # Buffer a tool hint
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "search 'foo'",
+                "media": [],
+                "metadata": {"_progress": True, "_tool_hint": True},
+            },
+        )()
+    )
+
+    # Send an empty progress message (no content, no media)
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "",
+                "media": [],
+                "metadata": {"_progress": True, "_tool_events": [{"phase": "end"}]},
+            },
+        )()
+    )
+
+    # Nothing should have been sent yet
+    channel._send_text.assert_not_awaited()
+    assert channel._pending_tool_hints["wx-user"] == ["search 'foo'"]
+
+    # Final answer flushes the buffered hint
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "Done",
+                "media": [],
+                "metadata": {},
+            },
+        )()
+    )
+
+    channel._send_text.assert_any_await("wx-user", "search 'foo'", "ctx-1")
+    channel._send_text.assert_any_await("wx-user", "Done", "ctx-1")
+    assert "wx-user" not in channel._pending_tool_hints
+
+
+@pytest.mark.asyncio
+async def test_buffer_flush_refreshes_context_token() -> None:
+    channel, _bus = _make_channel()
+    channel._client = object()
+    channel._token = "token"
+    channel.send_tool_hints = True
+    channel._context_tokens["wx-user"] = "ctx-old"
+    channel._context_token_at["wx-user"] = time.time()
+    channel._refresh_context_token_if_stale = AsyncMock(return_value="ctx-refreshed")
+    channel._send_text = AsyncMock()
+
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "hint",
+                "media": [],
+                "metadata": {"_progress": True, "_tool_hint": True},
+            },
+        )()
+    )
+
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "Done",
+                "media": [],
+                "metadata": {},
+            },
+        )()
+    )
+
+    assert channel._refresh_context_token_if_stale.await_count == 2
+    channel._refresh_context_token_if_stale.assert_any_await("wx-user", "ctx-old")
+    channel._send_text.assert_any_await("wx-user", "hint", "ctx-refreshed")
+
+
+@pytest.mark.asyncio
+async def test_buffer_flush_failure_does_not_block_final_answer() -> None:
+    channel, _bus = _make_channel()
+    channel._client = object()
+    channel._token = "token"
+    channel.send_tool_hints = True
+    channel._context_tokens["wx-user"] = "ctx-1"
+    channel._context_token_at["wx-user"] = time.time()
+    channel._send_text = AsyncMock(side_effect=[RuntimeError("boom"), None])
+
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "hint",
+                "media": [],
+                "metadata": {"_progress": True, "_tool_hint": True},
+            },
+        )()
+    )
+
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "Done",
+                "media": [],
+                "metadata": {},
+            },
+        )()
+    )
+
+    assert channel._send_text.await_count == 2
+    channel._send_text.assert_any_await("wx-user", "hint", "ctx-1")
+    channel._send_text.assert_any_await("wx-user", "Done", "ctx-1")
+
+
+@pytest.mark.asyncio
+async def test_buffer_flushed_on_stream_end() -> None:
+    channel, _bus = _make_channel()
+    channel._client = object()
+    channel._token = "token"
+    channel.send_tool_hints = True
+    channel._context_tokens["wx-user"] = "ctx-1"
+    channel._context_token_at["wx-user"] = time.time()
+    channel._send_text = AsyncMock()
+
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "hint",
+                "media": [],
+                "metadata": {"_progress": True, "_tool_hint": True},
+            },
+        )()
+    )
+
+    await channel.send_delta("wx-user", "", {"_stream_end": True})
+
+    channel._send_text.assert_awaited_once_with("wx-user", "hint", "ctx-1")
+    assert "wx-user" not in channel._pending_tool_hints
+
+
+@pytest.mark.asyncio
+async def test_stop_clears_buffer() -> None:
+    channel, _bus = _make_channel()
+    channel._pending_tool_hints["wx-user"] = ["hint1", "hint2"]
+    await channel.stop()
+    assert "wx-user" not in channel._pending_tool_hints
+
+
+@pytest.mark.asyncio
+async def test_send_tool_hints_false_drops_tool_hints() -> None:
+    channel, _bus = _make_channel()
+    channel._client = object()
+    channel._token = "token"
+    channel.send_tool_hints = False
+    channel._send_text = AsyncMock()
+
+    await channel.send(
+        type(
+            "Msg",
+            (),
+            {
+                "chat_id": "wx-user",
+                "content": "hint",
+                "media": [],
+                "metadata": {"_progress": True, "_tool_hint": True},
+            },
+        )()
+    )
+
+    channel._send_text.assert_not_awaited()
+    assert "wx-user" not in channel._pending_tool_hints

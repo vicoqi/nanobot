@@ -91,6 +91,13 @@ def test_channels_config_builtin_fields_removed():
     assert not hasattr(cfg, "telegram")
     assert cfg.send_progress is True
     assert cfg.send_tool_hints is False
+    assert cfg.extract_document_text is True
+
+
+def test_channels_config_extract_document_text_accepts_camel_alias():
+    cfg = ChannelsConfig.model_validate({"extractDocumentText": False})
+
+    assert cfg.extract_document_text is False
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +116,23 @@ def test_discover_plugins_loads_entry_points():
 
     assert "line" in result
     assert result["line"] is _FakePlugin
+
+
+def test_discover_plugins_skips_names_outside_enabled_set():
+    from nanobot.channels.registry import discover_plugins
+
+    loaded: list[str] = []
+
+    def _load_disabled():
+        loaded.append("disabled")
+        return _FakePlugin
+
+    ep = SimpleNamespace(name="disabled", load=_load_disabled)
+    with patch(_EP_TARGET, return_value=[ep]):
+        result = discover_plugins({"enabled"})
+
+    assert result == {}
+    assert loaded == []
 
 
 def test_discover_plugins_handles_load_error():
@@ -152,6 +176,25 @@ def test_discover_all_includes_external_plugin():
     assert result["line"] is _FakePlugin
 
 
+def test_discover_enabled_imports_only_enabled_builtins():
+    from nanobot.channels.registry import discover_enabled
+
+    loaded: list[str] = []
+
+    def _load_channel(name: str):
+        loaded.append(name)
+        return _FakePlugin
+
+    with (
+        patch("nanobot.channels.registry.load_channel_class", side_effect=_load_channel),
+        patch(_EP_TARGET, return_value=[]),
+    ):
+        result = discover_enabled({"enabled"}, _names=["enabled", "disabled"])
+
+    assert result == {"enabled": _FakePlugin}
+    assert loaded == ["enabled"]
+
+
 def test_discover_all_builtin_shadows_plugin():
     from nanobot.channels.registry import discover_all
 
@@ -180,7 +223,7 @@ async def test_manager_loads_plugin_from_dict_config():
     )
 
     with patch(
-        "nanobot.channels.registry.discover_all",
+        "nanobot.channels.registry.discover_enabled",
         return_value={"fakeplugin": _FakePlugin},
     ):
         mgr = ChannelManager.__new__(ChannelManager)
@@ -210,7 +253,7 @@ async def test_manager_propagates_groq_transcription_api_base_to_channels():
     )
 
     with patch(
-        "nanobot.channels.registry.discover_all",
+        "nanobot.channels.registry.discover_enabled",
         return_value={"fakeplugin": _FakePlugin},
     ):
         mgr = ChannelManager.__new__(ChannelManager)
@@ -246,7 +289,7 @@ async def test_manager_propagates_openai_transcription_api_base_to_channels():
     )
 
     with patch(
-        "nanobot.channels.registry.discover_all",
+        "nanobot.channels.registry.discover_enabled",
         return_value={"fakeplugin": _FakePlugin},
     ):
         mgr = ChannelManager.__new__(ChannelManager)
@@ -498,10 +541,8 @@ async def test_manager_skips_disabled_plugin():
         providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
     )
 
-    with patch(
-        "nanobot.channels.registry.discover_all",
-        return_value={"fakeplugin": _FakePlugin},
-    ):
+    ep = _make_entry_point("fakeplugin", _FakePlugin)
+    with patch(_EP_TARGET, return_value=[ep]):
         mgr = ChannelManager.__new__(ChannelManager)
         mgr.config = fake_config
         mgr.bus = MessageBus()
@@ -659,10 +700,11 @@ async def test_send_with_retry_retries_on_failure():
 
     # Patch asyncio.sleep to avoid actual delays
     with patch("nanobot.channels.manager.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-        await mgr._send_with_retry(mgr.channels["failing"], msg)
+        delivered = await mgr._send_with_retry(mgr.channels["failing"], msg)
 
     assert call_count == 3  # 3 total attempts (initial + 2 retries)
     assert mock_sleep.call_count == 2  # 2 sleeps between retries
+    assert delivered is False
 
 
 @pytest.mark.asyncio
@@ -699,9 +741,10 @@ async def test_send_with_retry_no_retry_when_max_is_zero():
     msg = OutboundMessage(channel="failing", chat_id="123", content="test")
 
     with patch("nanobot.channels.manager.asyncio.sleep", new_callable=AsyncMock):
-        await mgr._send_with_retry(mgr.channels["failing"], msg)
+        delivered = await mgr._send_with_retry(mgr.channels["failing"], msg)
 
     assert call_count == 1  # Called once but no retry (max(0, 1) = 1)
+    assert delivered is False
 
 
 @pytest.mark.asyncio
@@ -741,9 +784,10 @@ async def test_send_with_retry_calls_send_delta():
         channel="streaming", chat_id="123", content="test delta",
         metadata={"_stream_delta": True}
     )
-    await mgr._send_with_retry(mgr.channels["streaming"], msg)
+    delivered = await mgr._send_with_retry(mgr.channels["streaming"], msg)
 
     assert send_delta_called is True
+    assert delivered is True
 
 
 @pytest.mark.asyncio

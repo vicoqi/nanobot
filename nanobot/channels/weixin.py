@@ -77,7 +77,14 @@ BASE_INFO: dict[str, str] = {"channel_version": WEIXIN_CHANNEL_VERSION}
 
 # Session-expired error code
 ERRCODE_SESSION_EXPIRED = -14
+RET_CONTEXT_TOKEN_INVALID = -2
 SESSION_PAUSE_DURATION_S = 60 * 60
+
+# iLink context_token is observed to expire server-side after ~90-160s of
+# agent inactivity (openclaw/openclaw#61174). Proactively refresh before
+# sending if the cached token is older than this threshold.
+CONTEXT_TOKEN_MAX_AGE_S = 60
+
 
 # Retry constants (matching the reference plugin's monitor.ts)
 MAX_CONSECUTIVE_FAILURES = 3
@@ -159,6 +166,8 @@ class WeixinChannel(BaseChannel):
         self._session_pause_until: float = 0.0
         self._typing_tasks: dict[str, asyncio.Task] = {}
         self._typing_tickets: dict[str, dict[str, Any]] = {}
+        self._context_token_at: dict[str, float] = {}
+        self._pending_tool_hints: dict[str, list[str]] = {}
 
     # ------------------------------------------------------------------
     # State persistence
@@ -221,6 +230,25 @@ class WeixinChannel(BaseChannel):
                 "base_url": self.config.base_url,
             }
             state_file.write_text(json.dumps(data, ensure_ascii=False))
+
+    def _invalidate_context_token(self, chat_id: str, context_token: str = "") -> None:
+        """Drop a context token that the iLink server rejected."""
+        current = self._context_tokens.get(chat_id, "")
+        if not current:
+            return
+        if context_token and current != context_token:
+            return
+        self._context_tokens.pop(chat_id, None)
+        self._context_token_at.pop(chat_id, None)
+        self._typing_tickets.pop(chat_id, None)
+        self._save_state()
+
+    def _clear_session_state(self) -> None:
+        """Drop state that is only valid for a specific authenticated session."""
+        self._get_updates_buf = ""
+        self._context_tokens = {}
+        self._typing_tickets = {}
+        self._session_pause_until = 0.0
 
     # ------------------------------------------------------------------
     # HTTP helpers  (matches api.ts buildHeaders / apiFetch)
@@ -465,9 +493,19 @@ class WeixinChannel(BaseChannel):
             follow_redirects=True,
         )
 
-        if self.config.token:
-            self._token = self.config.token
-        elif not self._load_state():
+        loaded_state = self._load_state()
+        state_token = self._token
+        config_token = str(self.config.token or "").strip()
+
+        if config_token:
+            # Restore session-bound caches from disk even when the manager also
+            # injects the bot token into config.json. If the explicit config
+            # token differs from the persisted token, the cached context/cursor
+            # state belongs to a different session and must be discarded.
+            if loaded_state and state_token and state_token != config_token:
+                self._clear_session_state()
+            self._token = config_token
+        elif not loaded_state:
             if not await self._qr_login():
                 self.logger.error("login failed. Run 'nanobot channels login weixin' to authenticate.")
                 self._running = False
@@ -486,6 +524,7 @@ class WeixinChannel(BaseChannel):
             except Exception:
                 if not self._running:
                     break
+                self.logger.exception("WeChat poll loop error")
                 consecutive_failures += 1
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     consecutive_failures = 0
@@ -495,6 +534,7 @@ class WeixinChannel(BaseChannel):
 
     async def stop(self) -> None:
         self._running = False
+        self._pending_tool_hints.clear()
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
         for chat_id in list(self._typing_tasks):
@@ -545,6 +585,7 @@ class WeixinChannel(BaseChannel):
         # Check for API-level errors (monitor.ts checks both ret and errcode)
         ret = data.get("ret", 0)
         errcode = data.get("errcode", 0)
+
         is_error = (ret is not None and ret != 0) or (errcode is not None and errcode != 0)
 
         if is_error:
@@ -575,8 +616,10 @@ class WeixinChannel(BaseChannel):
         # Process messages (WeixinMessage[] from types.ts)
         msgs: list[dict] = data.get("msgs", []) or []
         for msg in msgs:
-            with suppress(Exception):
+            try:
                 await self._process_message(msg)
+            except Exception:
+                self.logger.exception("Failed to process WeChat message")
 
     # ------------------------------------------------------------------
     # Inbound message processing  (matches inbound.ts + process-message.ts)
@@ -610,6 +653,7 @@ class WeixinChannel(BaseChannel):
         ctx_token = msg.get("context_token", "")
         if ctx_token:
             self._context_tokens[from_user_id] = ctx_token
+            self._context_token_at[from_user_id] = time.time()
             self._save_state()
 
         # Parse item_list (WeixinMessage.item_list — types.ts:161)
@@ -915,6 +959,107 @@ class WeixinChannel(BaseChannel):
         }
         return ""
 
+    async def _refresh_context_token_if_stale(
+        self, chat_id: str, context_token: str
+    ) -> str:
+        """Return a fresh context_token if the cached one is too old.
+
+        iLink context_token expires server-side after a short idle period
+        (empirically ~90s). Proactively refreshing before sending prevents
+        silent message loss on long agent turns or cron pushes.
+        """
+        if not context_token:
+            return context_token
+
+        now = time.time()
+        cached_at = self._context_token_at.get(chat_id, 0)
+        age = now - cached_at
+
+        if age < CONTEXT_TOKEN_MAX_AGE_S:
+            return context_token
+
+        self.logger.debug(
+            "WeChat context_token for {} is {:.0f}s old; refreshing via getconfig",
+            chat_id,
+            age,
+        )
+
+        body: dict[str, Any] = {
+            "ilink_user_id": chat_id,
+            "context_token": context_token,
+            "base_info": BASE_INFO,
+        }
+        try:
+            data = await self._api_post("ilink/bot/getconfig", body)
+        except Exception as e:
+            self.logger.warning("WeChat getconfig failed for {}: {}", chat_id, e)
+            return context_token
+
+        ret = data.get("ret", 0)
+        if ret != 0:
+            if ret == RET_CONTEXT_TOKEN_INVALID:
+                self._invalidate_context_token(chat_id, context_token)
+                self.logger.warning(
+                    "WeChat getconfig rejected context_token for {}; waiting for next inbound message",
+                    chat_id,
+                )
+                return ""
+            self.logger.warning(
+                "WeChat getconfig returned ret={} for {}: {}",
+                ret,
+                chat_id,
+                data.get("errmsg", ""),
+            )
+            return context_token
+
+        new_token = str(data.get("context_token", "") or "")
+        if new_token and new_token != context_token:
+            self.logger.info(
+                "WeChat context_token refreshed for {} (age {:.0f}s -> fresh)",
+                chat_id,
+                age,
+            )
+            self._context_tokens[chat_id] = new_token
+            self._context_token_at[chat_id] = now
+            self._save_state()
+            return new_token
+
+        return context_token
+
+    async def _flush_tool_hints(self, chat_id: str) -> None:
+        """Send any buffered tool hints for *chat_id* as a single message.
+
+        Tool hints are coalesced to reduce message count and avoid hitting the
+        WeChat iLink rate limit (~7 msgs / 5 min).  Failures are logged but
+        not raised so that the main message send is never blocked.
+        """
+        hints = self._pending_tool_hints.pop(chat_id, None)
+        if not hints:
+            return
+
+        self.logger.info(
+            "Flushing {} buffered tool hint(s) for {}",
+            len(hints),
+            chat_id,
+        )
+
+        ctx_token = self._context_tokens.get(chat_id, "")
+        ctx_token = await self._refresh_context_token_if_stale(chat_id, ctx_token)
+        if not ctx_token:
+            self.logger.warning(
+                "Dropped {} buffered tool hint(s) for {}: no context_token",
+                len(hints),
+                chat_id,
+            )
+            return
+
+        try:
+            await self._send_text(chat_id, "\n\n".join(hints), ctx_token)
+        except Exception:
+            self.logger.exception(
+                "Failed to flush buffered tool hints for {}", chat_id
+            )
+
     async def _send_typing(self, user_id: str, typing_ticket: str, status: int) -> None:
         """Best-effort sendtyping wrapper."""
         if not typing_ticket:
@@ -944,11 +1089,47 @@ class WeixinChannel(BaseChannel):
         self._assert_session_active()
 
         is_progress = bool((msg.metadata or {}).get("_progress", False))
+
+        # Buffer tool hints to coalesce consecutive ones and avoid burning
+        # WeChat iLink rate-limit quota (~7 msgs / 5 min).
+        if is_progress and (msg.metadata or {}).get("_tool_hint"):
+            if not self.send_tool_hints:
+                return
+            self._pending_tool_hints.setdefault(msg.chat_id, []).append(msg.content)
+            self.logger.debug(
+                "Buffered tool hint for {} (count={})",
+                msg.chat_id,
+                len(self._pending_tool_hints[msg.chat_id]),
+            )
+            return
+
+        # Reasoning deltas are invisible in WeChat (there is no reasoning
+        # UI).  Skip them entirely — do not send and do not flush buffer.
+        if is_progress and (msg.metadata or {}).get("_reasoning_delta"):
+            self.logger.debug(
+                "Dropped invisible reasoning delta for {}", msg.chat_id
+            )
+            return
+
+        content = msg.content.strip()
+
+        # Empty progress messages (e.g. after_iteration tool_events) must
+        # NOT act as separators — they have no visible content.
+        if is_progress and not content and not (msg.media or []):
+            self.logger.debug(
+                "Skipped empty progress message for {} (no visible content)",
+                msg.chat_id,
+            )
+            return
+
+        # Flush buffered hints before sending any visible message.
+        await self._flush_tool_hints(msg.chat_id)
+
         if not is_progress:
             await self._stop_typing(msg.chat_id, clear_remote=True)
 
-        content = msg.content.strip()
         ctx_token = self._context_tokens.get(msg.chat_id, "")
+        ctx_token = await self._refresh_context_token_if_stale(msg.chat_id, ctx_token)
         if not ctx_token:
             raise RuntimeError(
                 f"WeChat context_token missing for chat_id={msg.chat_id}, cannot send"
@@ -1037,6 +1218,18 @@ class WeixinChannel(BaseChannel):
                 with suppress(Exception):
                     await self._send_typing(msg.chat_id, typing_ticket, TYPING_STATUS_CANCEL)
 
+    async def send_delta(
+        self, chat_id: str, delta: str, metadata: dict[str, Any] | None = None
+    ) -> None:
+        """Weixin iLink does not support native streaming deltas.
+
+        We only hook ``_stream_end`` so buffered tool hints are flushed even
+        when the final answer carries the ``_streamed`` flag and bypasses
+        :meth:`send`.
+        """
+        if metadata and metadata.get("_stream_end"):
+            await self._flush_tool_hints(chat_id)
+
     async def _start_typing(self, chat_id: str, context_token: str = "") -> None:
         """Start typing indicator immediately when a message is received."""
         if not self._client or not self._token or not chat_id:
@@ -1120,10 +1313,17 @@ class WeixinChannel(BaseChannel):
         }
 
         data = await self._api_post("ilink/bot/sendmessage", body)
+        ret = data.get("ret", 0)
         errcode = data.get("errcode", 0)
-        if errcode and errcode != 0:
+        if (ret is not None and ret != 0) or (errcode is not None and errcode != 0):
+            if ret == RET_CONTEXT_TOKEN_INVALID:
+                self._invalidate_context_token(to_user_id, context_token)
+                self.logger.warning(
+                    "WeChat sendmessage rejected context_token for {}; waiting for next inbound message",
+                    to_user_id,
+                )
             raise RuntimeError(
-                f"WeChat send text error (code {errcode}): {data.get('errmsg', '')}"
+                f"WeChat send text error (ret={ret}, errcode={errcode}): {data.get('errmsg', '')}"
             )
 
     async def _send_media_file(
@@ -1270,10 +1470,17 @@ class WeixinChannel(BaseChannel):
         }
 
         data = await self._api_post("ilink/bot/sendmessage", body)
+        ret = data.get("ret", 0)
         errcode = data.get("errcode", 0)
-        if errcode and errcode != 0:
+        if (ret is not None and ret != 0) or (errcode is not None and errcode != 0):
+            if ret == RET_CONTEXT_TOKEN_INVALID:
+                self._invalidate_context_token(to_user_id, context_token)
+                self.logger.warning(
+                    "WeChat sendmessage rejected context_token for {}; waiting for next inbound message",
+                    to_user_id,
+                )
             raise RuntimeError(
-                f"WeChat send media error (code {errcode}): {data.get('errmsg', '')}"
+                f"WeChat send media error (ret={ret}, errcode={errcode}): {data.get('errmsg', '')}"
             )
 
 

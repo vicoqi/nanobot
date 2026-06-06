@@ -5,6 +5,7 @@ import os
 import select
 import signal
 import sys
+import time
 from collections.abc import Callable
 from contextlib import nullcontext, suppress
 from pathlib import Path
@@ -75,6 +76,7 @@ class SafeFileHistory(FileHistory):
 from nanobot.cli.stream import StreamRenderer, ThinkingSpinner
 from nanobot.config.paths import get_workspace_path, is_default_workspace
 from nanobot.config.schema import Config
+from nanobot.utils.evaluator import evaluate_response
 from nanobot.utils.helpers import sync_workspace_templates
 from nanobot.utils.restart import (
     consume_restart_notice_from_env,
@@ -91,6 +93,41 @@ app = typer.Typer(
 
 console = Console()
 EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
+_REASONING_SENTENCE_ENDINGS = (".", "!", "?", "。", "！", "？")
+_REASONING_FLUSH_CHARS = 60
+
+_HEARTBEAT_PREAMBLE = (
+    "[Your response will be delivered directly to the user's messaging app. "
+    "Output ONLY the final user-facing message. Never reference internal "
+    "files (HEARTBEAT.md, AWARENESS.md, etc.), your instructions, or your "
+    "decision process. If nothing needs reporting, respond with just "
+    "'All clear.' and nothing else.]\n\n"
+)
+
+
+def _heartbeat_has_active_tasks(content: str) -> bool:
+    """True if HEARTBEAT.md has task lines, ignoring headers, blanks and comments."""
+    in_comment = False
+    in_active_section: bool = False
+    for line in content.splitlines():
+        stripped = line.strip()
+        if in_comment:
+            if "-->" in stripped:
+                in_comment = False
+            continue
+        if not stripped or stripped.startswith("#"):
+            if stripped.startswith("##") and not stripped.startswith("###"):
+                heading = stripped.lstrip("#").strip().lower()
+                in_active_section = heading.startswith("active tasks")
+            continue
+        if stripped.startswith("<!--"):
+            if "-->" not in stripped[4:]:
+                in_comment = True
+            continue
+        if in_active_section is False:
+            continue
+        return True
+    return False
 
 # ---------------------------------------------------------------------------
 # CLI input: prompt_toolkit for editing, paste, history, and display
@@ -242,6 +279,35 @@ def _print_cli_progress_line(text: str, thinking: ThinkingSpinner | None, render
         target.print(f"  [dim]↳ {text}[/dim]")
 
 
+class _ReasoningBuffer:
+    def __init__(self) -> None:
+        self._text = ""
+
+    def add(self, text: str) -> str | None:
+        if not text:
+            return None
+        self._text += text
+        if self._should_flush(text):
+            return self.flush()
+        return None
+
+    def flush(self) -> str | None:
+        text = self._text.strip()
+        self._text = ""
+        return text or None
+
+    def clear(self) -> None:
+        self._text = ""
+
+    def _should_flush(self, text: str) -> bool:
+        stripped = text.rstrip()
+        return (
+            "\n" in text
+            or stripped.endswith(_REASONING_SENTENCE_ENDINGS)
+            or len(self._text) >= _REASONING_FLUSH_CHARS
+        )
+
+
 def _print_cli_reasoning(text: str, thinking: ThinkingSpinner | None, renderer: StreamRenderer | None = None) -> None:
     """Print reasoning/thinking content in a distinct style."""
     if not text.strip():
@@ -252,6 +318,16 @@ def _print_cli_reasoning(text: str, thinking: ThinkingSpinner | None, renderer: 
         if renderer:
             renderer.ensure_header()
         target.print(f"[dim italic]✻ {text}[/dim italic]")
+
+
+def _flush_cli_reasoning(
+    reasoning_buffer: _ReasoningBuffer,
+    thinking: ThinkingSpinner | None,
+    renderer: StreamRenderer | None = None,
+) -> None:
+    text = reasoning_buffer.flush()
+    if text:
+        _print_cli_reasoning(text, thinking, renderer)
 
 
 async def _print_interactive_progress_line(text: str, thinking: ThinkingSpinner | None, renderer: StreamRenderer | None = None) -> None:
@@ -272,6 +348,7 @@ async def _maybe_print_interactive_progress(
     thinking: ThinkingSpinner | None,
     channels_config: Any,
     renderer: StreamRenderer | None = None,
+    reasoning_buffer: _ReasoningBuffer | None = None,
 ) -> bool:
     metadata = msg.metadata or {}
     if metadata.get("_retry_wait"):
@@ -281,12 +358,24 @@ async def _maybe_print_interactive_progress(
     if not metadata.get("_progress"):
         return False
 
+    reasoning_buffer = reasoning_buffer or _ReasoningBuffer()
+
+    if metadata.get("_reasoning_end"):
+        if channels_config and not channels_config.show_reasoning:
+            reasoning_buffer.clear()
+        else:
+            _flush_cli_reasoning(reasoning_buffer, thinking, renderer)
+        return True
+
     is_tool_hint = metadata.get("_tool_hint", False)
     is_reasoning = metadata.get("_reasoning", False) or metadata.get("_reasoning_delta", False)
     if is_reasoning:
         if channels_config and not channels_config.show_reasoning:
+            reasoning_buffer.clear()
             return True
-        _print_cli_reasoning(msg.content, thinking, renderer)
+        text = reasoning_buffer.add(msg.content)
+        if text:
+            _print_cli_reasoning(text, thinking, renderer)
         return True
     if channels_config and is_tool_hint and not channels_config.send_tool_hints:
         return True
@@ -566,6 +655,7 @@ def serve(
 
     from nanobot.api.server import create_app
     from nanobot.bus.queue import MessageBus
+    from nanobot.providers.image_generation import image_gen_provider_configs
     from nanobot.session.manager import SessionManager
 
     if verbose:
@@ -585,11 +675,7 @@ def serve(
         agent_loop = AgentLoop.from_config(
             runtime_config, bus,
             session_manager=session_manager,
-            image_generation_provider_configs={
-                "openrouter": runtime_config.providers.openrouter,
-                "aihubmix": runtime_config.providers.aihubmix,
-                "openai-images": runtime_config.providers.openai,
-            },
+            image_generation_provider_configs=image_gen_provider_configs(runtime_config),
         )
     except ValueError as exc:
         console.print(f"[red]Error: {exc}[/red]")
@@ -696,29 +782,175 @@ def manager(
     uvicorn.run(app, host=run_host, port=run_port, log_level="info")
 
 
+def _load_or_create_desktop_config(config: str | None, workspace: str | None) -> Config:
+    """Load the desktop-owned config, creating it on first launch."""
+    from nanobot.config.loader import (
+        get_config_path,
+        load_config,
+        resolve_config_env_vars,
+        save_config,
+        set_config_path,
+    )
+    from nanobot.config.schema import Config as NanobotConfig
+
+    config_path = Path(config).expanduser().resolve() if config else get_config_path()
+    set_config_path(config_path)
+    created = False
+    if config_path.exists():
+        try:
+            loaded = resolve_config_env_vars(load_config(config_path))
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(1)
+    else:
+        loaded = NanobotConfig()
+        created = True
+
+    if workspace:
+        workspace_path = Path(workspace).expanduser()
+        loaded.agents.defaults.workspace = str(workspace_path)
+        created = True
+
+    if created:
+        save_config(loaded, config_path)
+    return loaded
+
+
+def _configure_desktop_gateway(
+    config: Config,
+    *,
+    webui_port: int,
+    webui_socket: str | None,
+    token_issue_secret: str,
+) -> None:
+    """Force a local WebSocket-only gateway for the desktop app process."""
+    config.gateway.host = "127.0.0.1"
+    config.gateway.port = webui_port
+    config.gateway.heartbeat.enabled = False
+
+    extras = dict(getattr(config.channels, "__pydantic_extra__", None) or {})
+    for name, section in list(extras.items()):
+        if name == "websocket":
+            continue
+        if isinstance(section, dict):
+            extras[name] = {**section, "enabled": False}
+        else:
+            with suppress(Exception):
+                setattr(section, "enabled", False)
+            extras[name] = section
+
+    websocket_cfg = extras.get("websocket")
+    if not isinstance(websocket_cfg, dict):
+        websocket_cfg = {}
+    websocket_cfg.update(
+        {
+            "enabled": True,
+            "host": "127.0.0.1",
+            "port": webui_port,
+            "unix_socket_path": webui_socket or "",
+            "path": "/",
+            "token_issue_secret": token_issue_secret,
+            "websocket_requires_token": True,
+            "allow_from": ["*"],
+            "streaming": True,
+        }
+    )
+    extras["websocket"] = websocket_cfg
+    config.channels.__pydantic_extra__ = extras
+
+
+@app.command("desktop-gateway", hidden=True)
+def desktop_gateway(
+    webui_port: int = typer.Option(0, "--webui-port", min=0, max=65535),
+    webui_socket: str | None = typer.Option(None, "--webui-socket", help="Unix socket path for desktop IPC"),
+    token_issue_secret: str = typer.Option(..., "--token-issue-secret"),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Desktop workspace directory"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Desktop config file"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+):
+    """Start the private local gateway used by nanobot Desktop."""
+    if not token_issue_secret.strip():
+        console.print("[red]Error: --token-issue-secret is required[/red]")
+        raise typer.Exit(1)
+    if webui_port <= 0 and not (webui_socket or "").strip():
+        console.print("[red]Error: --webui-port or --webui-socket is required[/red]")
+        raise typer.Exit(1)
+    if verbose:
+        logger.remove(_log_handler_id)
+        logger.add(
+            sys.stderr,
+            format=(
+                "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+                "<level>{level: <5}</level> | "
+                "<cyan>{extra[channel]}</cyan> | "
+                "<level>{message}</level>"
+            ),
+            level="DEBUG",
+            colorize=None,
+            filter=lambda record: record["extra"].setdefault("channel", "-") or True,
+        )
+    cfg = _load_or_create_desktop_config(config, workspace)
+    _configure_desktop_gateway(
+        cfg,
+        webui_port=webui_port,
+        webui_socket=webui_socket,
+        token_issue_secret=token_issue_secret,
+    )
+    _run_gateway(
+        cfg,
+        port=webui_port,
+        webui_static_dist=False,
+        webui_runtime_surface="native",
+        webui_runtime_capabilities={
+            "can_restart_engine": True,
+            "can_pick_folder": True,
+            "can_open_logs": True,
+            "can_export_diagnostics": True,
+        },
+        health_server_enabled=False,
+    )
+
+
 def _run_gateway(
     config: Config,
     *,
     port: int | None = None,
     open_browser_url: str | None = None,
+    webui_static_dist: bool = True,
+    webui_runtime_surface: str = "browser",
+    webui_runtime_capabilities: dict[str, Any] | None = None,
+    health_server_enabled: bool = True,
 ) -> None:
     """Shared gateway runtime; ``open_browser_url`` opens a tab once channels are up."""
     from nanobot.agent.tools.cron import CronTool
     from nanobot.agent.tools.message import MessageTool
     from nanobot.bus.queue import MessageBus
+    from nanobot.bus.runtime_events import RuntimeEventBus
     from nanobot.channels.manager import ChannelManager
-    from nanobot.channels.websocket import publish_runtime_model_update
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
-    from nanobot.heartbeat.service import HeartbeatService
+    from nanobot.daily_delivery import (
+        DAILY_DELIVERY_JOB_ID,
+        DAILY_DELIVERY_JOB_NAME,
+        DAILY_DELIVERY_PLAN_PATH,
+        DAILY_DELIVERY_SKILL_PATH,
+        DAILY_DELIVERY_SUPPRESS_RESPONSE,
+        hash_daily_delivery_plan,
+        load_daily_delivery_state,
+        resolve_daily_delivery_schedule,
+        save_daily_delivery_state,
+    )
     from nanobot.providers.factory import build_provider_snapshot, load_provider_snapshot
+    from nanobot.providers.image_generation import image_gen_provider_configs
     from nanobot.session.manager import SessionManager
+    from nanobot.session.webui_turns import WebuiTurnCoordinator
 
     port = port if port is not None else config.gateway.port
 
     console.print(f"{__logo__} Starting nanobot gateway version {__version__} on port {port}...")
     sync_workspace_templates(config.workspace_path)
     bus = MessageBus()
+    runtime_events = RuntimeEventBus()
     try:
         provider_snapshot = build_provider_snapshot(config)
     except ValueError as exc:
@@ -742,19 +974,16 @@ def _run_gateway(
         context_window_tokens=provider_snapshot.context_window_tokens,
         cron_service=cron,
         session_manager=session_manager,
-        image_generation_provider_configs={
-            "openrouter": config.providers.openrouter,
-            "aihubmix": config.providers.aihubmix,
-            "openai-images": config.providers.openai,
-        },
+        image_generation_provider_configs=image_gen_provider_configs(config),
         provider_snapshot_loader=load_provider_snapshot,
-        runtime_model_publisher=lambda model, preset: publish_runtime_model_update(
-            bus,
-            model,
-            preset,
-        ),
+        runtime_events=runtime_events,
         provider_signature=provider_snapshot.signature,
     )
+    WebuiTurnCoordinator(
+        bus=bus,
+        sessions=session_manager,
+        schedule_background=lambda coro: agent._schedule_background(coro),
+    ).subscribe(runtime_events)
 
     from nanobot.agent.loop import UNIFIED_SESSION_KEY
     from nanobot.bus.events import OutboundMessage
@@ -766,25 +995,10 @@ def _run_gateway(
             else f"{channel}:{chat_id}"
         )
 
-    async def _deliver_to_channel(
-        msg: OutboundMessage, *, record: bool = False, session_key: str | None = None,
-    ) -> None:
-        """Publish a user-visible message and mirror it into that channel's session."""
-        metadata = dict(msg.metadata or {})
-        record = record or bool(metadata.pop("_record_channel_delivery", False))
-        if metadata != (msg.metadata or {}):
-            msg = OutboundMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                content=msg.content,
-                reply_to=msg.reply_to,
-                media=msg.media,
-                metadata=metadata,
-                buttons=msg.buttons,
-            )
+    def _record_channel_delivery(msg: OutboundMessage, session_key: str | None = None) -> None:
+        """Mirror a delivered user-visible message into that channel's session."""
         if (
-            record
-            and msg.channel != "cli"
+            msg.channel != "cli"
             and msg.content.strip()
             and hasattr(session_manager, "get_or_create")
             and hasattr(session_manager, "save")
@@ -796,25 +1010,321 @@ def _run_gateway(
                 extra["media"] = list(msg.media)
             session.add_message("assistant", msg.content, **extra)
             session_manager.save(session)
+
+    async def _deliver_to_channel(
+        msg: OutboundMessage,
+        *,
+        record: bool = False,
+        session_key: str | None = None,
+        wait_for_send: bool = False,
+    ) -> bool:
+        """Publish a user-visible message and optionally wait for channel delivery."""
+        metadata = dict(msg.metadata or {})
+        record = record or bool(metadata.pop("_record_channel_delivery", False))
+        wait_for_send = wait_for_send or bool(metadata.pop("_wait_for_channel_delivery", False))
+        if metadata != (msg.metadata or {}):
+            msg = OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=msg.content,
+                reply_to=msg.reply_to,
+                media=msg.media,
+                metadata=metadata,
+                buttons=msg.buttons,
+            )
+
+        if wait_for_send and msg.channel != "cli":
+            send_now = getattr(channels, "send_outbound_now", None)
+            if not callable(send_now):
+                raise RuntimeError("Channel delivery confirmation unavailable")
+            if not await send_now(msg):
+                raise RuntimeError(f"Channel delivery failed for {msg.channel}:{msg.chat_id}")
+            if record:
+                _record_channel_delivery(msg, session_key)
+            return True
+
+        if record:
+            _record_channel_delivery(msg, session_key)
         await bus.publish_outbound(msg)
+        return True
 
     message_tool = getattr(agent, "tools", {}).get("message")
     if isinstance(message_tool, MessageTool):
         message_tool.set_send_callback(_deliver_to_channel)
 
+    async def _silent(*_args, **_kwargs):
+        pass
+
+    def _pick_external_target() -> tuple[str, str] | None:
+        """Pick the most recent non-internal session on an enabled external channel."""
+        enabled = set(channels.enabled_channels)
+        for item in session_manager.list_sessions():
+            key = item.get("key") or ""
+            if ":" not in key:
+                continue
+            channel, chat_id = key.split(":", 1)
+            if channel in {"cli", "system"}:
+                continue
+            if channel in enabled and chat_id:
+                return channel, chat_id
+        return None
+
+    async def _run_scheduled_turn(
+        prompt: str,
+        *,
+        session_key: str,
+        channel: str,
+        chat_id: str,
+    ) -> tuple[str, bool]:
+        """Execute one scheduled agent turn and report whether it self-delivered."""
+        cron_tool = agent.tools.get("cron")
+        cron_token = None
+        if isinstance(cron_tool, CronTool):
+            cron_token = cron_tool.set_cron_context(True)
+
+        message_record_token = None
+        message_wait_token = None
+        if isinstance(message_tool, MessageTool):
+            message_record_token = message_tool.set_record_channel_delivery(True)
+            message_wait_token = message_tool.set_wait_for_channel_delivery(True)
+
+        try:
+            resp = await agent.process_direct(
+                prompt,
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
+                on_progress=_silent,
+            )
+        finally:
+            if isinstance(cron_tool, CronTool) and cron_token is not None:
+                cron_tool.reset_cron_context(cron_token)
+            if isinstance(message_tool, MessageTool) and message_record_token is not None:
+                message_tool.reset_record_channel_delivery(message_record_token)
+            if isinstance(message_tool, MessageTool) and message_wait_token is not None:
+                message_tool.reset_wait_for_channel_delivery(message_wait_token)
+
+        return resp.content if resp else "", bool(
+            isinstance(message_tool, MessageTool) and message_tool._sent_in_turn
+        )
+
+    def _daily_delivery_is_deliverable(response: str) -> bool:
+        """Reject internal/meta daily-delivery outputs before user delivery."""
+        text = response.strip()
+        if not text or text == DAILY_DELIVERY_SUPPRESS_RESPONSE:
+            return False
+        lowered = text.lower()
+        leaked_patterns = [
+            str(DAILY_DELIVERY_SKILL_PATH).lower(),
+            str(DAILY_DELIVERY_PLAN_PATH).lower(),
+            "my instructions",
+            "i am supposed to",
+            "decision logic",
+            "output only the final user-facing message",
+        ]
+        return not any(pattern in lowered for pattern in leaked_patterns)
+
+    def _record_daily_delivery_state(
+        state: dict[str, Any],
+        plan_hash: str,
+        *,
+        status: str,
+        skipped: bool = False,
+        skip_reason: str | None = None,
+        completed: bool = True,
+        error: str | None = None,
+    ) -> None:
+        """Best-effort runtime marker so unchanged PLAN.md is not re-executed hourly."""
+        now_ms = int(time.time() * 1000)
+        next_state = dict(state)
+        if completed or skipped:
+            next_state["lastPlanHash"] = plan_hash
+        else:
+            next_state["lastAttemptedPlanHash"] = plan_hash
+        next_state["lastStatus"] = status
+        if skipped:
+            next_state["lastSkippedAtMs"] = now_ms
+            next_state["lastSkipReason"] = skip_reason or status
+        elif completed:
+            next_state["lastExecutedAtMs"] = now_ms
+            next_state.pop("lastError", None)
+        else:
+            next_state["lastFailedAtMs"] = now_ms
+            if error:
+                next_state["lastError"] = error
+
+        try:
+            save_daily_delivery_state(config.workspace_path, next_state)
+        except Exception:
+            logger.exception(
+                "Daily delivery state update failed; unchanged PLAN.md may run again"
+            )
+
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
+        async def _silent(*_args, **_kwargs):
+            pass
+
         # Dream is an internal job — run directly, not through the agent loop.
         if job.name == "dream":
             try:
-                await agent.dream.run()
+                await agent.run_dream_passes()
                 logger.info("Dream cron job completed")
             except Exception:
                 logger.exception("Dream cron job failed")
             return None
 
-        from nanobot.utils.evaluator import evaluate_response
+        # Heartbeat is a system job that checks HEARTBEAT.md for active tasks.
+        if job.name == "heartbeat":
+            heartbeat_file = config.workspace_path / "HEARTBEAT.md"
+            try:
+                content = heartbeat_file.read_text(encoding="utf-8")
+            except OSError:
+                logger.debug("Heartbeat: HEARTBEAT.md missing")
+                return None
+            if not _heartbeat_has_active_tasks(content):
+                logger.debug("Heartbeat: HEARTBEAT.md has no active tasks")
+                return None
+
+            channel, chat_id = _pick_heartbeat_target()
+            if channel == "cli":
+                return None
+
+            prompt = (
+                _HEARTBEAT_PREAMBLE
+                + f"Review the following HEARTBEAT.md and report any active tasks:\n\n{content}"
+            )
+
+            # Internal check: funnel all output through the post-run gate so the
+            # turn can't deliver directly via the message tool and skip it.
+            suppress_token = None
+            if isinstance(message_tool, MessageTool):
+                suppress_token = message_tool.set_suppress_delivery(True)
+            try:
+                resp = await agent.process_direct(
+                    prompt,
+                    session_key="heartbeat",
+                    channel=channel,
+                    chat_id=chat_id,
+                    on_progress=_silent,
+                )
+            finally:
+                if isinstance(message_tool, MessageTool) and suppress_token is not None:
+                    message_tool.reset_suppress_delivery(suppress_token)
+            response = resp.content if resp else ""
+
+            # Keep a small tail of heartbeat history so the loop stays bounded.
+            session = agent.sessions.get_or_create("heartbeat")
+            session.retain_recent_legal_suffix(hb_cfg.keep_recent_messages)
+            agent.sessions.save(session)
+
+            if not response:
+                return None
+
+            # Fail closed: stay silent on evaluator failure instead of notifying.
+            should_notify = await evaluate_response(
+                response, prompt, agent.provider, agent.model,
+                default_notify=False,
+            )
+            if should_notify:
+                logger.info("Heartbeat: completed, delivering response")
+                await _deliver_to_channel(
+                    OutboundMessage(channel=channel, chat_id=chat_id, content=response),
+                    record=True,
+                )
+            else:
+                logger.info("Heartbeat: silenced by post-run evaluation")
+            return response
+
+        if job.name == DAILY_DELIVERY_JOB_NAME:
+            plan_hash = hash_daily_delivery_plan(config.workspace_path)
+            delivery_state = load_daily_delivery_state(config.workspace_path)
+            if delivery_state.get("lastPlanHash") == plan_hash:
+                _record_daily_delivery_state(
+                    delivery_state,
+                    plan_hash,
+                    status="skipped",
+                    skipped=True,
+                    skip_reason="plan_unchanged",
+                )
+                logger.info("Daily delivery skipped: PLAN.md unchanged ({})", plan_hash)
+                return None
+
+            target = _pick_external_target()
+            if target is None:
+                logger.info("Daily delivery skipped: no active external channel target")
+                return None
+            channel, chat_id = target
+            delivery_note = (
+                "[Your response will be delivered directly to the user's messaging app. "
+                "Output ONLY the final user-facing message. "
+                f"Read `{DAILY_DELIVERY_SKILL_PATH}` first and follow it. "
+                f"That skill will tell you to read `{DAILY_DELIVERY_PLAN_PATH}`. "
+                "Use the strict V2 Today Delivery Intent when it is valid. "
+                "If the intent is missing but the plan includes candidate backups, "
+                "use the first concrete candidate backup before suppressing delivery. "
+                f"If the plan is inactive or says not to send anything today, "
+                f"respond with exactly '{DAILY_DELIVERY_SUPPRESS_RESPONSE}' and nothing else.]\n\n"
+                "Execute today's proactive delivery."
+            )
+            response, self_delivered = await _run_scheduled_turn(
+                delivery_note,
+                session_key=DAILY_DELIVERY_JOB_ID,
+                channel=channel,
+                chat_id=chat_id,
+            )
+            if self_delivered:
+                _record_daily_delivery_state(
+                    delivery_state,
+                    plan_hash,
+                    status="self_delivered",
+                )
+                return response
+            if not _daily_delivery_is_deliverable(response):
+                logger.info("Daily delivery suppressed ({})", response[:80] if response else "empty")
+                _record_daily_delivery_state(
+                    delivery_state,
+                    plan_hash,
+                    status="suppressed",
+                )
+                return response
+            should_notify = await evaluate_response(
+                response, delivery_note, agent.provider, agent.model,
+            )
+            if should_notify:
+                try:
+                    await _deliver_to_channel(
+                        OutboundMessage(channel=channel, chat_id=chat_id, content=response),
+                        record=True,
+                        wait_for_send=True,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Daily delivery send failed; will retry while PLAN.md is unchanged: {}",
+                        exc,
+                    )
+                    _record_daily_delivery_state(
+                        delivery_state,
+                        plan_hash,
+                        status="send_failed",
+                        completed=False,
+                        error=str(exc),
+                    )
+                    return response
+                _record_daily_delivery_state(
+                    delivery_state,
+                    plan_hash,
+                    status="sent",
+                )
+            else:
+                logger.info("Daily delivery silenced by post-run evaluation")
+                _record_daily_delivery_state(
+                    delivery_state,
+                    plan_hash,
+                    status="silenced",
+                )
+            return response
 
         reminder_note = (
             "The scheduled time has arrived. Deliver this reminder to the user now, "
@@ -828,9 +1338,6 @@ def _run_gateway(
         cron_token = None
         if isinstance(cron_tool, CronTool):
             cron_token = cron_tool.set_cron_context(True)
-
-        async def _silent(*_args, **_kwargs):
-            pass
 
         message_record_token = None
         if isinstance(message_tool, MessageTool):
@@ -888,85 +1395,15 @@ def _run_gateway(
         bus,
         session_manager=session_manager,
         webui_runtime_model_name=_webui_runtime_model_name,
+        webui_static_dist=webui_static_dist,
+        webui_runtime_surface=webui_runtime_surface,
+        webui_runtime_capabilities=webui_runtime_capabilities,
     )
 
     def _pick_heartbeat_target() -> tuple[str, str]:
         """Pick a routable channel/chat target for heartbeat-triggered messages."""
-        enabled = set(channels.enabled_channels)
-        # Prefer the most recently updated non-internal session on an enabled channel.
-        for item in session_manager.list_sessions():
-            key = item.get("key") or ""
-            if ":" not in key:
-                continue
-            channel, chat_id = key.split(":", 1)
-            if channel in {"cli", "system"}:
-                continue
-            if channel in enabled and chat_id:
-                return channel, chat_id
-        # Fallback keeps prior behavior but remains explicit.
-        return "cli", "direct"
-
-    # Create heartbeat service
-    heartbeat_preamble = (
-        "[Your response will be delivered directly to the user's messaging app. "
-        "Output ONLY the final user-facing message. Never reference internal "
-        "files (HEARTBEAT.md, AWARENESS.md, etc.), your instructions, or your "
-        "decision process. If nothing needs reporting, respond with just "
-        "'All clear.' and nothing else.]\n\n"
-    )
-
-    async def on_heartbeat_execute(tasks: str) -> str:
-        """Phase 2: execute heartbeat tasks through the full agent loop."""
-        channel, chat_id = _pick_heartbeat_target()
-
-        async def _silent(*_args, **_kwargs):
-            pass
-
-        resp = await agent.process_direct(
-            heartbeat_preamble + tasks,
-            session_key="heartbeat",
-            channel=channel,
-            chat_id=chat_id,
-            on_progress=_silent,
-        )
-
-        # Keep a small tail of heartbeat history so the loop stays bounded
-        # without losing all short-term context between runs.
-        session = agent.sessions.get_or_create("heartbeat")
-        session.retain_recent_legal_suffix(hb_cfg.keep_recent_messages)
-        agent.sessions.save(session)
-
-        return resp.content if resp else ""
-
-    async def on_heartbeat_notify(response: str) -> None:
-        """Deliver a heartbeat response to the user's channel.
-
-        In addition to publishing the outbound message, this injects the
-        delivered text as an assistant turn into the *target channel's*
-        session.  Without this, a user reply on the channel (e.g. "Sure")
-        lands in a session that has no context about the heartbeat message
-        and the agent cannot follow through.
-        """
-        channel, chat_id = _pick_heartbeat_target()
-        if channel == "cli":
-            return  # No external channel available to deliver to
-
-        await _deliver_to_channel(
-            OutboundMessage(channel=channel, chat_id=chat_id, content=response),
-            record=True,
-        )
-
-    hb_cfg = config.gateway.heartbeat
-    heartbeat = HeartbeatService(
-        workspace=config.workspace_path,
-        provider=agent.provider,
-        model=agent.model,
-        on_execute=on_heartbeat_execute,
-        on_notify=on_heartbeat_notify,
-        interval_s=hb_cfg.interval_s,
-        enabled=hb_cfg.enabled,
-        timezone=config.agents.defaults.timezone,
-    )
+        target = _pick_external_target()
+        return target if target is not None else ("cli", "direct")
 
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
@@ -977,7 +1414,11 @@ def _run_gateway(
     if cron_status["jobs"] > 0:
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
 
-    console.print(f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s")
+    hb_cfg = config.gateway.heartbeat
+    if hb_cfg.enabled:
+        console.print(f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s")
+    else:
+        console.print("[yellow]✗[/yellow] Heartbeat: disabled")
 
     async def _health_server(host: str, health_port: int):
         """Lightweight HTTP health endpoint on the gateway port."""
@@ -1021,21 +1462,65 @@ def _run_gateway(
         console.print(f"[green]✓[/green] Health endpoint: http://{host}:{health_port}/health")
         async with server:
             await server.serve_forever()
-    # Register Dream system job (always-on, idempotent on restart)
+    # Register Dream system job (idempotent on restart)
     dream_cfg = config.agents.defaults.dream
     if dream_cfg.model_override:
         agent.dream.model = dream_cfg.model_override
     agent.dream.max_batch_size = dream_cfg.max_batch_size
     agent.dream.max_iterations = dream_cfg.max_iterations
     agent.dream.annotate_line_ages = dream_cfg.annotate_line_ages
-    from nanobot.cron.types import CronJob, CronPayload
-    cron.register_system_job(CronJob(
-        id="dream",
-        name="dream",
-        schedule=dream_cfg.build_schedule(config.agents.defaults.timezone),
-        payload=CronPayload(kind="system_event"),
-    ))
-    console.print(f"[green]✓[/green] Dream: {dream_cfg.describe_schedule()}")
+    from nanobot.cron.types import CronJob, CronPayload, CronSchedule
+    if dream_cfg.enabled:
+        cron.register_system_job(CronJob(
+            id="dream",
+            name="dream",
+            schedule=dream_cfg.build_schedule(config.agents.defaults.timezone),
+            payload=CronPayload(kind="system_event"),
+        ))
+        console.print(f"[green]✓[/green] Dream: {dream_cfg.describe_schedule()}")
+    else:
+        console.print("[yellow]○[/yellow] Dream: disabled")
+
+    # Register Heartbeat system job (idempotent on restart)
+    if hb_cfg.enabled:
+        cron.register_system_job(CronJob(
+            id="heartbeat",
+            name="heartbeat",
+            schedule=CronSchedule(
+                kind="every",
+                every_ms=hb_cfg.interval_s * 1000,
+                tz=config.agents.defaults.timezone,
+            ),
+            payload=CronPayload(kind="system_event"),
+        ))
+
+    daily_cfg = config.agents.defaults.daily_delivery
+    if daily_cfg.enabled:
+        base_daily_schedule = daily_cfg.build_schedule(config.agents.defaults.timezone)
+        daily_schedule, offset_minutes = resolve_daily_delivery_schedule(
+            base_daily_schedule,
+            cron.list_jobs(include_disabled=True),
+            now_ms=int(time.time() * 1000),
+        )
+        cron.register_system_job(CronJob(
+            id=DAILY_DELIVERY_JOB_ID,
+            name=DAILY_DELIVERY_JOB_NAME,
+            schedule=daily_schedule,
+            payload=CronPayload(kind="system_event"),
+        ))
+        if offset_minutes > 0 and daily_schedule.expr:
+            logger.info(
+                "Daily delivery schedule auto-shifted from {} to {} (+{}m) to avoid cron conflicts",
+                base_daily_schedule.expr,
+                daily_schedule.expr,
+                offset_minutes,
+            )
+            console.print(
+                "[green]✓[/green] Daily delivery: "
+                f"cron {daily_schedule.expr} (auto-shifted +{offset_minutes}m from {daily_cfg.cron})"
+            )
+        else:
+            console.print(f"[green]✓[/green] Daily delivery: {daily_cfg.describe_schedule()}")
 
     async def _open_browser_when_ready() -> None:
         """Wait for the gateway to bind, then point the user's browser at the webui."""
@@ -1063,12 +1548,12 @@ def _run_gateway(
     async def run():
         try:
             await cron.start()
-            await heartbeat.start()
             tasks = [
                 agent.run(),
                 channels.start_all(),
-                _health_server(config.gateway.host, port),
             ]
+            if health_server_enabled:
+                tasks.append(_health_server(config.gateway.host, port))
             if open_browser_url:
                 tasks.append(_open_browser_when_ready())
             await asyncio.gather(*tasks)
@@ -1081,7 +1566,6 @@ def _run_gateway(
             console.print(traceback.format_exc())
         finally:
             await agent.close_mcp()
-            heartbeat.stop()
             cron.stop()
             agent.stop()
             await channels.stop_all()
@@ -1114,6 +1598,7 @@ def agent(
 
     from nanobot.bus.queue import MessageBus
     from nanobot.cron.service import CronService
+    from nanobot.providers.image_generation import image_gen_provider_configs
 
     config = _load_runtime_config(config, workspace)
     sync_workspace_templates(config.workspace_path)
@@ -1137,6 +1622,7 @@ def agent(
         agent_loop = AgentLoop.from_config(
             config, bus,
             cron_service=cron,
+            image_generation_provider_configs=image_gen_provider_configs(config),
         )
     except ValueError as exc:
         console.print(f"[red]Error: {exc}[/red]")
@@ -1152,12 +1638,25 @@ def agent(
     _thinking: ThinkingSpinner | None = None
 
     def _make_progress(renderer: StreamRenderer | None = None):
+        reasoning_buffer = _ReasoningBuffer()
+
         async def _cli_progress(content: str, *, tool_hint: bool = False, reasoning: bool = False, **_kwargs: Any) -> None:
             ch = agent_loop.channels_config
+
+            if _kwargs.get("reasoning_end"):
+                if ch and not ch.show_reasoning:
+                    reasoning_buffer.clear()
+                else:
+                    _flush_cli_reasoning(reasoning_buffer, _thinking, renderer)
+                return
+
             if reasoning:
                 if ch and not ch.show_reasoning:
+                    reasoning_buffer.clear()
                     return
-                _print_cli_reasoning(content, _thinking, renderer)
+                text = reasoning_buffer.add(content)
+                if text:
+                    _print_cli_reasoning(text, _thinking, renderer)
                 return
             if ch and tool_hint and not ch.send_tool_hints:
                 return
@@ -1228,6 +1727,7 @@ def agent(
             turn_done.set()
             turn_response: list[tuple[str, dict]] = []
             renderer: StreamRenderer | None = None
+            reasoning_buffer = _ReasoningBuffer()
 
             async def _consume_outbound():
                 while True:
@@ -1253,6 +1753,7 @@ def agent(
                             renderer,
                             agent_loop.channels_config,
                             renderer,
+                            reasoning_buffer,
                         ):
                             continue
 
@@ -1293,6 +1794,7 @@ def agent(
 
                         turn_done.clear()
                         turn_response.clear()
+                        reasoning_buffer.clear()
                         renderer = StreamRenderer(
                             render_markdown=markdown,
                             bot_name=config.agents.defaults.bot_name,

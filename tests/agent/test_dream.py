@@ -10,6 +10,7 @@ from nanobot.agent.memory import Dream, MemoryStore
 from nanobot.agent.runner import AgentRunResult
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.utils.gitstore import LineAge
+from nanobot.utils.helpers import sync_workspace_templates
 
 
 @pytest.fixture
@@ -18,6 +19,7 @@ def store(tmp_path):
     s.write_soul("# Soul\n- Helpful")
     s.write_user("# User\n- Developer")
     s.write_memory("# Memory\n- Project X active")
+    sync_workspace_templates(tmp_path, silent=True)
     return s
 
 
@@ -258,6 +260,21 @@ class TestDreamRun:
         # The template renders with stale_threshold_days=14 → LLM must see "N>14"
         assert "N>14" in system_msg
 
+    async def test_phase1_prompt_does_not_include_daily_delivery_plan_context(
+        self, dream, mock_provider, mock_runner, store,
+    ):
+        """Memory-only Dream should not carry PLAN.md context."""
+        store.append_history("User likes concise weather nudges.")
+        mock_provider.chat_with_retry.return_value = MagicMock(content="[SKIP]")
+        mock_runner.run = AsyncMock(return_value=_make_run_result())
+
+        await dream.run()
+
+        user_msg = mock_provider.chat_with_retry.call_args.kwargs["messages"][1]["content"]
+        system_msg = mock_provider.chat_with_retry.call_args.kwargs["messages"][0]["content"]
+        assert "PLAN.md" not in user_msg
+        assert "[PLAN]" not in system_msg
+
 
 class TestDreamPromptCaps:
     """Dream's Phase 1/2 prompt must not be poisoned by a legacy oversized
@@ -306,4 +323,3 @@ class TestDreamPromptCaps:
         user_msg = mock_provider.chat_with_retry.call_args.kwargs["messages"][1]["content"]
         history_section = user_msg.split("## Conversation History\n")[1].split("\n\n## Current Date")[0]
         assert len(history_section) < dream._HISTORY_ENTRY_PREVIEW_MAX_CHARS + 500
-

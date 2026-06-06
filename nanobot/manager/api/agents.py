@@ -28,6 +28,7 @@ from nanobot.manager.services.agent_manager import AgentProcessManager
 from nanobot.manager.services.config_builder import (
     build_agent_config,
     cleanup_agent_files,
+    update_agent_daily_delivery_config,
     write_agent_files,
 )
 from nanobot.manager.services.skills import (
@@ -115,10 +116,15 @@ async def update_agent(
     req: UpdateAgentRequest,
     payload: dict = Depends(get_current_user),
     db: Database = Depends(get_db),
+    pm: AgentProcessManager = Depends(get_process_manager),
 ):
     agent = _check_owner(await db.get_agent(agent_id), _get_user_id(payload))
 
     updates = {}
+    daily_delivery_changed = (
+        req.daily_delivery_enabled is not None
+        and req.daily_delivery_enabled != agent.daily_delivery_enabled
+    )
     if req.name is not None:
         updates["name"] = req.name
     if req.soul is not None:
@@ -129,14 +135,23 @@ async def update_agent(
         updates["city"] = req.city
     if req.gender is not None:
         updates["gender"] = req.gender
+    if req.daily_delivery_enabled is not None:
+        updates["daily_delivery_enabled"] = req.daily_delivery_enabled
 
     if updates:
         await db.update_agent(agent_id, **updates)
-        # Regenerate SOUL.md with updated profile
         updated = await db.get_agent(agent_id)
+        # Regenerate SOUL.md with updated profile
         from nanobot.manager.services.config_builder import build_soul_md
         soul_path = Path(updated.workspace_path) / "SOUL.md"
         soul_path.write_text(build_soul_md(updated), encoding="utf-8")
+        if req.daily_delivery_enabled is not None:
+            update_agent_daily_delivery_config(updated)
+        if daily_delivery_changed and updated.status == AgentStatus.RUNNING:
+            restarted = await pm.restart_agent(updated, db)
+            if restarted is not None:
+                updated = restarted
+        return updated
     return await db.get_agent(agent_id)
 
 

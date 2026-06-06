@@ -10,10 +10,18 @@ from typer.testing import CliRunner
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.cli.commands import app
-from nanobot.providers.factory import make_provider
 from nanobot.config.schema import Config
-from nanobot.cron.types import CronJob, CronPayload
-from nanobot.providers.factory import ProviderSnapshot
+from nanobot.cron.types import CronJob, CronPayload, CronSchedule
+from nanobot.daily_delivery import (
+    DAILY_DELIVERY_JOB_ID,
+    DAILY_DELIVERY_JOB_NAME,
+    DAILY_DELIVERY_PLAN_PATH,
+    DAILY_DELIVERY_SKILL_PATH,
+    DAILY_DELIVERY_STATE_PATH,
+    hash_daily_delivery_plan,
+    save_daily_delivery_state,
+)
+from nanobot.providers.factory import ProviderSnapshot, make_provider
 from nanobot.providers.openai_codex_provider import _strip_model_prefix
 from nanobot.providers.registry import find_by_name
 
@@ -469,6 +477,28 @@ def test_config_auto_detects_xiaomi_mimo_from_model_keyword():
     assert config.get_api_base() == "https://api.xiaomimimo.com/v1"
 
 
+def test_config_explicit_minimax_anthropic_provider_uses_default_api_base():
+    config = Config.model_validate(
+        {
+            "agents": {
+                "defaults": {
+                    "provider": "minimax_anthropic",
+                    "model": "MiniMax-M2.7-highspeed",
+                }
+            },
+            "providers": {
+                "minimaxAnthropic": {
+                    "apiKey": "test-key",
+                }
+            },
+        }
+    )
+
+    assert config.get_provider_name() == "minimax_anthropic"
+    assert config.get_api_key() == "test-key"
+    assert config.get_api_base() == "https://api.minimax.io/anthropic"
+
+
 def test_config_auto_detects_ollama_from_local_api_base():
     config = Config.model_validate(
         {
@@ -520,8 +550,8 @@ def test_openai_compat_provider_passes_model_through():
 
 
 def test_make_provider_uses_github_copilot_backend():
-    from nanobot.providers.factory import make_provider
     from nanobot.config.schema import Config
+    from nanobot.providers.factory import make_provider
 
     config = Config.model_validate(
         {
@@ -572,6 +602,7 @@ async def test_github_copilot_provider_refreshes_client_api_key_before_chat():
 
     with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI", return_value=mock_client):
         provider = GitHubCopilotProvider(default_model="github-copilot/gpt-4")
+        await provider._ensure_client()
 
     provider._get_copilot_access_token = AsyncMock(return_value="copilot-access-token")
 
@@ -611,7 +642,8 @@ def test_make_provider_passes_extra_headers_to_custom_provider():
     )
 
     with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI") as mock_async_openai:
-        make_provider(config)
+        provider = make_provider(config)
+        asyncio.run(provider._ensure_client())
 
     kwargs = mock_async_openai.call_args.kwargs
     assert kwargs["api_key"] == "test-key"
@@ -928,6 +960,33 @@ def test_heartbeat_retains_recent_messages_by_default():
     assert config.gateway.heartbeat.keep_recent_messages == 8
 
 
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        ("", False),
+        ("# Title\n\n## Active Tasks\n", False),
+        ("<!--\nmulti-line\ncomment\n-->\n", False),  # block comment, not tasks
+        ("<!-- single line -->\n", False),
+        ("## Active Tasks\n\n- water the plants\n", True),
+        ("## Active Tasks\n\n### Garden\n\n- water the plants\n", True),
+        ("## Notes\n\nsome random note\n", False),
+        ("stray text before any heading\n## Active Tasks\n\n- task\n", True),
+        ("stray text before any heading\n", False),
+    ],
+)
+def test_heartbeat_has_active_tasks(content, expected):
+    from nanobot.cli.commands import _heartbeat_has_active_tasks
+
+    assert _heartbeat_has_active_tasks(content) is expected
+
+
+def test_heartbeat_skips_bundled_template():
+    from nanobot.cli.commands import _heartbeat_has_active_tasks
+    from nanobot.utils.helpers import load_bundled_template
+
+    assert _heartbeat_has_active_tasks(load_bundled_template("HEARTBEAT.md")) is False
+
+
 def _write_instance_config(tmp_path: Path) -> Path:
     config_file = tmp_path / "instance" / "config.json"
     config_file.parent.mkdir(parents=True)
@@ -1170,6 +1229,7 @@ def test_gateway_cron_evaluator_receives_scheduled_reminder_context(
             self.model = "test-model"
             self.provider = kwargs.get("provider", object())
             self.tools = {}
+            seen["agent"] = self
 
         async def process_direct(self, *_args, **_kwargs):
             return OutboundMessage(
@@ -1207,7 +1267,7 @@ def test_gateway_cron_evaluator_receives_scheduled_reminder_context(
     monkeypatch.setattr("nanobot.cli.commands.AgentLoop", _FakeAgentLoop)
     monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _StopAfterCronSetup)
     monkeypatch.setattr(
-        "nanobot.utils.evaluator.evaluate_response",
+        "nanobot.cli.commands.evaluate_response",
         _capture_evaluate_response,
     )
 
@@ -1217,6 +1277,11 @@ def test_gateway_cron_evaluator_receives_scheduled_reminder_context(
     cron = seen["cron"]
     assert isinstance(cron, _FakeCron)
     assert cron.on_job is not None
+
+    runtime_provider = object()
+    agent = seen["agent"]
+    agent.provider = runtime_provider
+    agent.model = "runtime-model"
 
     job = CronJob(
         id="cron-1",
@@ -1233,8 +1298,8 @@ def test_gateway_cron_evaluator_receives_scheduled_reminder_context(
 
     assert response == "Time to stretch."
     assert seen["response"] == "Time to stretch."
-    assert seen["provider"] is provider
-    assert seen["model"] == "test-model"
+    assert seen["provider"] is runtime_provider
+    assert seen["model"] == "runtime-model"
     assert seen["task_context"] == (
         "The scheduled time has arrived. Deliver this reminder to the user now, "
         "as a brief and natural message in their language. Speak directly to them — "
@@ -1334,7 +1399,7 @@ def test_gateway_cron_job_suppresses_intermediate_progress(
     monkeypatch.setattr("nanobot.cli.commands.AgentLoop", _FakeAgentLoop)
     monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _StopAfterCronSetup)
     monkeypatch.setattr(
-        "nanobot.utils.evaluator.evaluate_response",
+        "nanobot.cli.commands.evaluate_response",
         _always_reject,
     )
 
@@ -1362,6 +1427,718 @@ def test_gateway_cron_job_suppresses_intermediate_progress(
     asyncio.run(seen["on_progress"]("tool_hint", "🔧 $ echo test"))
     # Nothing published to bus since evaluator rejected
     bus.publish_outbound.assert_not_awaited()
+
+
+def test_gateway_registers_daily_delivery_system_job_when_enabled(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_file = _write_instance_config(tmp_path)
+    config = Config()
+    config.agents.defaults.daily_delivery.enabled = True
+    config.gateway.heartbeat.enabled = False
+    config.agents.defaults.workspace = str(tmp_path / "config-workspace")
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr("nanobot.config.loader.set_config_path", lambda _path: None)
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda _path=None: config)
+    monkeypatch.setattr("nanobot.config.loader.resolve_config_env_vars", lambda c: c)
+    monkeypatch.setattr("nanobot.cli.commands.sync_workspace_templates", lambda _path: None)
+    monkeypatch.setattr(
+        "nanobot.providers.factory.build_provider_snapshot",
+        lambda _config: _test_provider_snapshot(object(), _config),
+    )
+    monkeypatch.setattr(
+        "nanobot.providers.factory.load_provider_snapshot",
+        lambda _config_path=None: _test_provider_snapshot(object(), config),
+    )
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", lambda: object())
+    monkeypatch.setattr("nanobot.session.manager.SessionManager", lambda _workspace: object())
+
+    class _FakeDream:
+        model = None
+        max_batch_size = 0
+        max_iterations = 0
+        annotate_line_ages = True
+
+        async def run(self) -> None:
+            return None
+
+    class _FakeDreamPlan(_FakeDream):
+        pass
+
+    class _FakeAgentLoop:
+        @classmethod
+        def from_config(cls, _config, bus=None, **extra):
+            return cls()
+
+        def __init__(self) -> None:
+            self.model = "test-model"
+            self.provider = object()
+            self.dream = _FakeDream()
+            self.dream_plan = _FakeDreamPlan()
+            self.tools = {}
+
+        async def run_dream_passes(self) -> dict[str, bool]:
+            return {"memory": False, "plan": False}
+
+    class _FakeCron:
+        def __init__(self, _store_path: Path) -> None:
+            self.registered: list[CronJob] = []
+            seen["cron"] = self
+
+        def status(self) -> dict[str, int]:
+            return {"jobs": 0}
+
+        def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
+            return []
+
+        def register_system_job(self, job: CronJob) -> None:
+            self.registered.append(job)
+            if len(self.registered) >= 2:
+                raise _StopGatewayError("stop")
+
+    class _FakeChannelManager:
+        def __init__(self, _config, _bus, **_kwargs) -> None:
+            self.enabled_channels = ["telegram"]
+
+    monkeypatch.setattr("nanobot.cli.commands.AgentLoop", _FakeAgentLoop)
+    monkeypatch.setattr("nanobot.cron.service.CronService", _FakeCron)
+    monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _FakeChannelManager)
+
+    result = runner.invoke(app, ["gateway", "--config", str(config_file)])
+
+    assert isinstance(result.exception, _StopGatewayError)
+    cron = seen["cron"]
+    assert isinstance(cron, _FakeCron)
+    assert [job.name for job in cron.registered] == ["dream", DAILY_DELIVERY_JOB_NAME]
+
+
+def test_gateway_daily_delivery_uses_latest_external_session(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_file = _write_instance_config(tmp_path)
+    config = Config()
+    config.agents.defaults.daily_delivery.enabled = True
+    config.gateway.heartbeat.enabled = False
+    config.agents.defaults.workspace = str(tmp_path / "config-workspace")
+    workspace = Path(config.agents.defaults.workspace)
+    plan_path = workspace / DAILY_DELIVERY_PLAN_PATH
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text("# Daily Delivery Plan\n\n## Today Delivery Intent\n", encoding="utf-8")
+    bus = MagicMock()
+    bus.publish_outbound = AsyncMock()
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr("nanobot.config.loader.set_config_path", lambda _path: None)
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda _path=None: config)
+    monkeypatch.setattr("nanobot.config.loader.resolve_config_env_vars", lambda c: c)
+    monkeypatch.setattr("nanobot.cli.commands.sync_workspace_templates", lambda _path: None)
+    monkeypatch.setattr(
+        "nanobot.providers.factory.build_provider_snapshot",
+        lambda _config: _test_provider_snapshot(object(), _config),
+    )
+    monkeypatch.setattr(
+        "nanobot.providers.factory.load_provider_snapshot",
+        lambda _config_path=None: _test_provider_snapshot(object(), config),
+    )
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", lambda: bus)
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.messages = []
+
+        def add_message(self, role: str, content: str, **kwargs) -> None:
+            self.messages.append({"role": role, "content": content, **kwargs})
+
+    class _FakeSessionManager:
+        def __init__(self, _workspace: Path) -> None:
+            self.session = _FakeSession()
+            seen["session_manager"] = self
+
+        def list_sessions(self) -> list[dict[str, str]]:
+            return [{"key": "telegram:user-9", "updated_at": "2026-05-27T09:00:00"}]
+
+        def get_or_create(self, key: str) -> _FakeSession:
+            seen["session_key"] = key
+            return self.session
+
+        def save(self, session: _FakeSession) -> None:
+            seen["saved_session"] = session
+
+        def flush_all(self) -> int:
+            return 0
+
+    monkeypatch.setattr("nanobot.session.manager.SessionManager", _FakeSessionManager)
+
+    class _FakeDream:
+        model = None
+        max_batch_size = 0
+        max_iterations = 0
+        annotate_line_ages = True
+
+        async def run(self) -> None:
+            return None
+
+    class _FakeDreamPlan(_FakeDream):
+        pass
+
+    class _FakeAgentLoop:
+        @classmethod
+        def from_config(cls, _config, bus=None, **extra):
+            return cls()
+
+        def __init__(self) -> None:
+            self.model = "test-model"
+            self.provider = object()
+            self.dream = _FakeDream()
+            self.dream_plan = _FakeDreamPlan()
+            self.sessions = _FakeSessionManager(Path("."))
+            self.tools = {}
+
+        async def run_dream_passes(self) -> dict[str, bool]:
+            return {"memory": False, "plan": False}
+
+        async def process_direct(self, message: str, **kwargs):
+            seen["delivery_prompt"] = message
+            seen["process_kwargs"] = kwargs
+            return OutboundMessage(
+                channel="telegram",
+                chat_id="user-9",
+                content="Morning brief.",
+            )
+
+        async def close_mcp(self) -> None:
+            return None
+
+        async def run(self) -> None:
+            await asyncio.Event().wait()
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCron:
+        def __init__(self, _store_path: Path) -> None:
+            self.on_job = None
+            seen["cron"] = self
+
+        async def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+        def status(self) -> dict[str, int]:
+            return {"jobs": 0}
+
+        def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
+            return []
+
+        def register_system_job(self, _job) -> None:
+            return None
+
+    class _FakeChannelManager:
+        def __init__(self, _config, _bus, **_kwargs) -> None:
+            self.enabled_channels = ["telegram"]
+
+        async def send_outbound_now(self, msg: OutboundMessage) -> bool:
+            seen["direct_outbound"] = msg
+            return True
+
+        async def start_all(self) -> None:
+            await asyncio.Event().wait()
+
+        async def stop_all(self) -> None:
+            return None
+
+    class _FakeServer:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        async def serve_forever(self) -> None:
+            raise _StopGatewayError("stop")
+
+    async def _fake_start_server(handler, host: str, port: int):
+        return _FakeServer()
+
+    async def _capture_evaluate_response(response: str, task_context: str, provider_arg: object, model: str) -> bool:
+        seen["response"] = response
+        seen["task_context"] = task_context
+        return True
+
+    monkeypatch.setattr("nanobot.cli.commands.AgentLoop", _FakeAgentLoop)
+    monkeypatch.setattr("nanobot.cron.service.CronService", _FakeCron)
+    monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _FakeChannelManager)
+    monkeypatch.setattr("asyncio.start_server", _fake_start_server)
+    monkeypatch.setattr("nanobot.cli.commands.evaluate_response", _capture_evaluate_response)
+
+    result = runner.invoke(app, ["gateway", "--config", str(config_file)])
+
+    assert result.exit_code == 0
+    cron = seen["cron"]
+    assert isinstance(cron, _FakeCron)
+    assert cron.on_job is not None
+
+    response = asyncio.run(
+        cron.on_job(CronJob(id=DAILY_DELIVERY_JOB_ID, name=DAILY_DELIVERY_JOB_NAME, payload=CronPayload(kind="system_event")))
+    )
+
+    assert response == "Morning brief."
+    assert DAILY_DELIVERY_SKILL_PATH.as_posix() in seen["delivery_prompt"]
+    assert DAILY_DELIVERY_PLAN_PATH.as_posix() in seen["delivery_prompt"]
+    assert "low-confidence" not in seen["delivery_prompt"]
+    assert "use the first concrete candidate backup before suppressing delivery" in seen["delivery_prompt"]
+    assert "inactive or says not to send anything today" in seen["delivery_prompt"]
+    state = json.loads((workspace / DAILY_DELIVERY_STATE_PATH).read_text(encoding="utf-8"))
+    assert state["lastPlanHash"] == hash_daily_delivery_plan(workspace)
+    assert state["lastStatus"] == "sent"
+    assert isinstance(state["lastExecutedAtMs"], int)
+    assert seen["process_kwargs"]["session_key"] == DAILY_DELIVERY_JOB_ID
+    assert seen["process_kwargs"]["channel"] == "telegram"
+    assert seen["process_kwargs"]["chat_id"] == "user-9"
+    assert seen["direct_outbound"] == OutboundMessage(
+        channel="telegram", chat_id="user-9", content="Morning brief."
+    )
+    bus.publish_outbound.assert_not_awaited()
+    assert seen["session_key"] == "telegram:user-9"
+    saved_session = seen["saved_session"]
+    assert isinstance(saved_session, _FakeSession)
+    assert saved_session.messages == [
+        {
+            "role": "assistant",
+            "content": "Morning brief.",
+            "_channel_delivery": True,
+        }
+    ]
+
+
+def test_gateway_daily_delivery_does_not_mark_plan_sent_when_channel_send_fails(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_file = _write_instance_config(tmp_path)
+    config = Config()
+    config.agents.defaults.daily_delivery.enabled = True
+    config.gateway.heartbeat.enabled = False
+    config.agents.defaults.workspace = str(tmp_path / "config-workspace")
+    workspace = Path(config.agents.defaults.workspace)
+    plan_path = workspace / DAILY_DELIVERY_PLAN_PATH
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text("# Daily Delivery Plan\n\n## Today Delivery Intent\n", encoding="utf-8")
+    plan_hash = hash_daily_delivery_plan(workspace)
+    bus = MagicMock()
+    bus.publish_outbound = AsyncMock()
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr("nanobot.config.loader.set_config_path", lambda _path: None)
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda _path=None: config)
+    monkeypatch.setattr("nanobot.config.loader.resolve_config_env_vars", lambda c: c)
+    monkeypatch.setattr("nanobot.cli.commands.sync_workspace_templates", lambda _path: None)
+    monkeypatch.setattr(
+        "nanobot.providers.factory.build_provider_snapshot",
+        lambda _config: _test_provider_snapshot(object(), _config),
+    )
+    monkeypatch.setattr(
+        "nanobot.providers.factory.load_provider_snapshot",
+        lambda _config_path=None: _test_provider_snapshot(object(), config),
+    )
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", lambda: bus)
+
+    class _FakeSessionManager:
+        def __init__(self, _workspace: Path) -> None:
+            return None
+
+        def list_sessions(self) -> list[dict[str, str]]:
+            return [{"key": "telegram:user-9", "updated_at": "2026-05-27T09:00:00"}]
+
+        def get_or_create(self, _key: str):
+            raise AssertionError("failed delivery must not be recorded in session history")
+
+        def save(self, _session) -> None:
+            raise AssertionError("failed delivery must not be recorded in session history")
+
+        def flush_all(self) -> int:
+            return 0
+
+    monkeypatch.setattr("nanobot.session.manager.SessionManager", _FakeSessionManager)
+
+    class _FakeDream:
+        model = None
+        max_batch_size = 0
+        max_iterations = 0
+        annotate_line_ages = True
+
+        async def run(self) -> None:
+            return None
+
+    class _FakeDreamPlan(_FakeDream):
+        pass
+
+    class _FakeAgentLoop:
+        @classmethod
+        def from_config(cls, _config, bus=None, **extra):
+            return cls()
+
+        def __init__(self) -> None:
+            self.model = "test-model"
+            self.provider = object()
+            self.dream = _FakeDream()
+            self.dream_plan = _FakeDreamPlan()
+            self.sessions = _FakeSessionManager(Path("."))
+            self.tools = {}
+
+        async def run_dream_passes(self) -> dict[str, bool]:
+            return {"memory": False, "plan": False}
+
+        async def process_direct(self, *_args, **_kwargs):
+            return OutboundMessage(
+                channel="telegram",
+                chat_id="user-9",
+                content="Morning brief.",
+            )
+
+        async def close_mcp(self) -> None:
+            return None
+
+        async def run(self) -> None:
+            await asyncio.Event().wait()
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCron:
+        def __init__(self, _store_path: Path) -> None:
+            self.on_job = None
+            seen["cron"] = self
+
+        async def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+        def status(self) -> dict[str, int]:
+            return {"jobs": 0}
+
+        def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
+            return []
+
+        def register_system_job(self, _job) -> None:
+            return None
+
+    class _FakeChannelManager:
+        def __init__(self, _config, _bus, **_kwargs) -> None:
+            self.enabled_channels = ["telegram"]
+
+        async def send_outbound_now(self, msg: OutboundMessage) -> bool:
+            seen["direct_outbound"] = msg
+            return False
+
+        async def start_all(self) -> None:
+            await asyncio.Event().wait()
+
+        async def stop_all(self) -> None:
+            return None
+
+    class _FakeServer:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        async def serve_forever(self) -> None:
+            raise _StopGatewayError("stop")
+
+    async def _fake_start_server(handler, host: str, port: int):
+        return _FakeServer()
+
+    async def _always_notify(*_args, **_kwargs) -> bool:
+        return True
+
+    monkeypatch.setattr("nanobot.cli.commands.AgentLoop", _FakeAgentLoop)
+    monkeypatch.setattr("nanobot.cron.service.CronService", _FakeCron)
+    monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _FakeChannelManager)
+    monkeypatch.setattr("asyncio.start_server", _fake_start_server)
+    monkeypatch.setattr("nanobot.cli.commands.evaluate_response", _always_notify)
+
+    result = runner.invoke(app, ["gateway", "--config", str(config_file)])
+
+    assert result.exit_code == 0
+    cron = seen["cron"]
+    assert isinstance(cron, _FakeCron)
+    assert cron.on_job is not None
+
+    response = asyncio.run(
+        cron.on_job(CronJob(id=DAILY_DELIVERY_JOB_ID, name=DAILY_DELIVERY_JOB_NAME, payload=CronPayload(kind="system_event")))
+    )
+
+    assert response == "Morning brief."
+    assert seen["direct_outbound"] == OutboundMessage(
+        channel="telegram", chat_id="user-9", content="Morning brief."
+    )
+    bus.publish_outbound.assert_not_awaited()
+    state = json.loads((workspace / DAILY_DELIVERY_STATE_PATH).read_text(encoding="utf-8"))
+    assert state["lastStatus"] == "send_failed"
+    assert state["lastAttemptedPlanHash"] == plan_hash
+    assert "lastPlanHash" not in state
+    assert isinstance(state["lastFailedAtMs"], int)
+    assert "Channel delivery failed for telegram:user-9" in state["lastError"]
+
+
+def test_gateway_daily_delivery_skips_when_plan_hash_unchanged(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_file = _write_instance_config(tmp_path)
+    config = Config()
+    config.agents.defaults.daily_delivery.enabled = True
+    config.gateway.heartbeat.enabled = False
+    config.agents.defaults.workspace = str(tmp_path / "config-workspace")
+    workspace = Path(config.agents.defaults.workspace)
+    plan_path = workspace / DAILY_DELIVERY_PLAN_PATH
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text("# Daily Delivery Plan\n\nunchanged\n", encoding="utf-8")
+    plan_hash = hash_daily_delivery_plan(workspace)
+    save_daily_delivery_state(
+        workspace,
+        {
+            "lastPlanHash": plan_hash,
+            "lastExecutedAtMs": 123,
+            "lastStatus": "sent",
+        },
+    )
+    bus = MagicMock()
+    bus.publish_outbound = AsyncMock()
+    seen: dict[str, object] = {"process_calls": 0}
+
+    monkeypatch.setattr("nanobot.config.loader.set_config_path", lambda _path: None)
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda _path=None: config)
+    monkeypatch.setattr("nanobot.config.loader.resolve_config_env_vars", lambda c: c)
+    monkeypatch.setattr("nanobot.cli.commands.sync_workspace_templates", lambda _path: None)
+    monkeypatch.setattr(
+        "nanobot.providers.factory.build_provider_snapshot",
+        lambda _config: _test_provider_snapshot(object(), _config),
+    )
+    monkeypatch.setattr(
+        "nanobot.providers.factory.load_provider_snapshot",
+        lambda _config_path=None: _test_provider_snapshot(object(), config),
+    )
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", lambda: bus)
+
+    class _FakeSessionManager:
+        def __init__(self, _workspace: Path) -> None:
+            return None
+
+        def list_sessions(self) -> list[dict[str, str]]:
+            raise AssertionError("daily delivery should skip before picking a target")
+
+        def flush_all(self) -> int:
+            return 0
+
+    monkeypatch.setattr("nanobot.session.manager.SessionManager", _FakeSessionManager)
+
+    class _FakeDream:
+        model = None
+        max_batch_size = 0
+        max_iterations = 0
+        annotate_line_ages = True
+
+        async def run(self) -> None:
+            return None
+
+    class _FakeDreamPlan(_FakeDream):
+        pass
+
+    class _FakeAgentLoop:
+        @classmethod
+        def from_config(cls, _config, bus=None, **extra):
+            return cls()
+
+        def __init__(self) -> None:
+            self.model = "test-model"
+            self.provider = object()
+            self.dream = _FakeDream()
+            self.dream_plan = _FakeDreamPlan()
+            self.sessions = _FakeSessionManager(Path("."))
+            self.tools = {}
+
+        async def run_dream_passes(self) -> dict[str, bool]:
+            return {"memory": False, "plan": False}
+
+        async def process_direct(self, *_args, **_kwargs):
+            seen["process_calls"] = int(seen["process_calls"]) + 1
+            raise AssertionError("unchanged PLAN.md should not execute the agent")
+
+        async def close_mcp(self) -> None:
+            return None
+
+        async def run(self) -> None:
+            await asyncio.Event().wait()
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCron:
+        def __init__(self, _store_path: Path) -> None:
+            self.on_job = None
+            seen["cron"] = self
+
+        async def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+        def status(self) -> dict[str, int]:
+            return {"jobs": 0}
+
+        def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
+            return []
+
+        def register_system_job(self, _job) -> None:
+            return None
+
+    class _FakeChannelManager:
+        def __init__(self, _config, _bus, **_kwargs) -> None:
+            self.enabled_channels = ["telegram"]
+
+        async def start_all(self) -> None:
+            await asyncio.Event().wait()
+
+        async def stop_all(self) -> None:
+            return None
+
+    class _FakeServer:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        async def serve_forever(self) -> None:
+            raise _StopGatewayError("stop")
+
+    async def _fake_start_server(handler, host: str, port: int):
+        return _FakeServer()
+
+    monkeypatch.setattr("nanobot.cli.commands.AgentLoop", _FakeAgentLoop)
+    monkeypatch.setattr("nanobot.cron.service.CronService", _FakeCron)
+    monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _FakeChannelManager)
+    monkeypatch.setattr("asyncio.start_server", _fake_start_server)
+
+    result = runner.invoke(app, ["gateway", "--config", str(config_file)])
+
+    assert result.exit_code == 0
+    cron = seen["cron"]
+    assert isinstance(cron, _FakeCron)
+    assert cron.on_job is not None
+
+    response = asyncio.run(
+        cron.on_job(CronJob(id=DAILY_DELIVERY_JOB_ID, name=DAILY_DELIVERY_JOB_NAME, payload=CronPayload(kind="system_event")))
+    )
+
+    assert response is None
+    assert seen["process_calls"] == 0
+    bus.publish_outbound.assert_not_awaited()
+    state = json.loads((workspace / DAILY_DELIVERY_STATE_PATH).read_text(encoding="utf-8"))
+    assert state["lastPlanHash"] == plan_hash
+    assert state["lastStatus"] == "skipped"
+    assert state["lastSkipReason"] == "plan_unchanged"
+    assert state["lastExecutedAtMs"] == 123
+    assert isinstance(state["lastSkippedAtMs"], int)
+
+
+def test_gateway_auto_shifts_daily_delivery_away_from_existing_cron_job(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_file = _write_instance_config(tmp_path)
+    config = Config()
+    config.agents.defaults.daily_delivery.enabled = True
+    config.gateway.heartbeat.enabled = False
+    config.agents.defaults.workspace = str(tmp_path / "config-workspace")
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr("nanobot.config.loader.set_config_path", lambda _path: None)
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda _path=None: config)
+    monkeypatch.setattr("nanobot.config.loader.resolve_config_env_vars", lambda c: c)
+    monkeypatch.setattr("nanobot.cli.commands.sync_workspace_templates", lambda _path: None)
+    monkeypatch.setattr(
+        "nanobot.providers.factory.build_provider_snapshot",
+        lambda _config: _test_provider_snapshot(object(), _config),
+    )
+    monkeypatch.setattr(
+        "nanobot.providers.factory.load_provider_snapshot",
+        lambda _config_path=None: _test_provider_snapshot(object(), config),
+    )
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", lambda: object())
+    monkeypatch.setattr("nanobot.session.manager.SessionManager", lambda _workspace: object())
+
+    class _FakeDream:
+        model = None
+        max_batch_size = 0
+        max_iterations = 0
+        annotate_line_ages = True
+
+        async def run(self) -> None:
+            return None
+
+    class _FakeDreamPlan(_FakeDream):
+        pass
+
+    class _FakeAgentLoop:
+        @classmethod
+        def from_config(cls, _config, bus=None, **extra):
+            return cls()
+
+        def __init__(self) -> None:
+            self.model = "test-model"
+            self.provider = object()
+            self.dream = _FakeDream()
+            self.dream_plan = _FakeDreamPlan()
+            self.tools = {}
+
+        async def run_dream_passes(self) -> dict[str, bool]:
+            return {"memory": False, "plan": False}
+
+    class _FakeCron:
+        def __init__(self, _store_path: Path) -> None:
+            self.registered: list[CronJob] = []
+            seen["cron"] = self
+
+        def status(self) -> dict[str, int]:
+            return {"jobs": 1}
+
+        def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
+            return [
+                CronJob(
+                    id="weather",
+                    name="weather",
+                    schedule=CronSchedule(kind="cron", expr="0 8 * * *", tz="UTC"),
+                    payload=CronPayload(kind="agent_turn", deliver=True),
+                )
+            ]
+
+        def register_system_job(self, job: CronJob) -> None:
+            self.registered.append(job)
+            if len(self.registered) >= 2:
+                raise _StopGatewayError("stop")
+
+    class _FakeChannelManager:
+        def __init__(self, _config, _bus, **_kwargs) -> None:
+            self.enabled_channels = ["telegram"]
+
+    monkeypatch.setattr("nanobot.cli.commands.AgentLoop", _FakeAgentLoop)
+    monkeypatch.setattr("nanobot.cron.service.CronService", _FakeCron)
+    monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _FakeChannelManager)
+
+    result = runner.invoke(app, ["gateway", "--config", str(config_file)])
+
+    assert isinstance(result.exception, _StopGatewayError)
+    cron = seen["cron"]
+    assert isinstance(cron, _FakeCron)
+    assert [job.name for job in cron.registered] == ["dream", DAILY_DELIVERY_JOB_NAME]
+    assert cron.registered[1].schedule.expr == "10 8 * * *"
 
 
 def test_gateway_workspace_override_does_not_migrate_legacy_cron(
@@ -1513,6 +2290,35 @@ def test_gateway_cli_port_overrides_configured_port(monkeypatch, tmp_path: Path)
     assert "port 18792" in result.stdout
 
 
+def test_configure_desktop_gateway_forces_local_websocket_only() -> None:
+    from nanobot.cli.commands import _configure_desktop_gateway
+
+    config = Config()
+    config.channels.__pydantic_extra__ = {
+        "telegram": {"enabled": True, "token": "x"},
+        "websocket": {"enabled": False, "port": 8765},
+    }
+
+    _configure_desktop_gateway(
+        config,
+        webui_port=29888,
+        webui_socket="/tmp/nanobot-test.sock",
+        token_issue_secret="secret",
+    )
+
+    extras = config.channels.__pydantic_extra__ or {}
+    assert config.gateway.host == "127.0.0.1"
+    assert config.gateway.port == 29888
+    assert config.gateway.heartbeat.enabled is False
+    assert extras["telegram"]["enabled"] is False
+    assert extras["websocket"]["enabled"] is True
+    assert extras["websocket"]["host"] == "127.0.0.1"
+    assert extras["websocket"]["port"] == 29888
+    assert extras["websocket"]["unix_socket_path"] == "/tmp/nanobot-test.sock"
+    assert extras["websocket"]["token_issue_secret"] == "secret"
+    assert extras["websocket"]["websocket_requires_token"] is True
+
+
 def test_gateway_health_endpoint_binds_and_serves_expected_responses(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1529,6 +2335,9 @@ def test_gateway_health_endpoint_binds_and_serves_expected_responses(
         async def run(self) -> None:
             return None
 
+    class _FakeDreamPlan(_FakeDream):
+        pass
+
     class _FakeSessionManager:
         def flush_all(self) -> int:
             return 0
@@ -1541,7 +2350,14 @@ def test_gateway_health_endpoint_binds_and_serves_expected_responses(
             self.model = "test-model"
             self.provider = object()
             self.dream = _FakeDream()
+            self.dream_plan = _FakeDreamPlan()
             self.sessions = _FakeSessionManager()
+
+        async def run_dream_passes(self) -> dict[str, bool]:
+            return {"memory": False, "plan": False}
+
+        def llm_runtime(self) -> None:
+            return None
 
         async def run(self) -> None:
             await asyncio.Event().wait()
@@ -1576,16 +2392,6 @@ def test_gateway_health_endpoint_binds_and_serves_expected_responses(
             return {"jobs": 0}
 
         def register_system_job(self, _job) -> None:
-            return None
-
-    class _FakeHeartbeatService:
-        def __init__(self, **_kwargs) -> None:
-            return None
-
-        async def start(self) -> None:
-            return None
-
-        def stop(self) -> None:
             return None
 
     class _FakeServer:
@@ -1634,7 +2440,6 @@ def test_gateway_health_endpoint_binds_and_serves_expected_responses(
     monkeypatch.setattr("nanobot.cli.commands.AgentLoop", _FakeAgentLoop)
     monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _FakeChannelManager)
     monkeypatch.setattr("nanobot.cron.service.CronService", _FakeCronService)
-    monkeypatch.setattr("nanobot.heartbeat.service.HeartbeatService", _FakeHeartbeatService)
     monkeypatch.setattr("asyncio.start_server", _fake_start_server)
 
     result = runner.invoke(app, ["gateway", "--config", str(config_file)])

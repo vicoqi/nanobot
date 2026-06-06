@@ -301,6 +301,22 @@ def test_remove_protected_dream_job_returns_clear_feedback(tmp_path) -> None:
     assert tool._cron.get_job("dream") is not None
 
 
+def test_list_includes_daily_delivery_system_job_with_delivery_purpose(tmp_path) -> None:
+    tool = _make_tool(tmp_path)
+    tool._cron.register_system_job(CronJob(
+        id="daily-delivery",
+        name="daily-delivery",
+        schedule=CronSchedule(kind="cron", expr="0 8 * * *", tz="Asia/Shanghai"),
+        payload=CronPayload(kind="system_event"),
+    ))
+
+    result = tool._list_jobs()
+
+    assert "- daily-delivery (id: daily-delivery, cron: 0 8 * * * (Asia/Shanghai))" in result
+    assert "Dream-guided daily channel delivery using the fixed workspace skill and plan." in result
+    assert "cannot be removed" in result
+
+
 def test_add_cron_job_defaults_to_tool_timezone(tmp_path) -> None:
     tool = _make_tool_with_tz(tmp_path, "Asia/Shanghai")
     tool.set_context(RequestContext(channel="telegram", chat_id="chat-1"))

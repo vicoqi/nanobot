@@ -45,7 +45,7 @@ export default function AuthForm({
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center">
+    <div className="relative flex min-h-dvh items-center justify-center p-4">
       <div className="absolute top-4 right-4">
         <Button variant="ghost" size="sm" onClick={() => setLocale(locale === "zh" ? "en" : "zh")}>
           {locale === "zh" ? "English" : "中文"}

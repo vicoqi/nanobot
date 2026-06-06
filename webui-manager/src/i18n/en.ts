@@ -65,6 +65,7 @@ const en = {
     genderFemale: "Female",
     genderMale: "Male",
     personality: "Personality / SOUL",
+    enableFriendlyDelivery: "Enable Friendly Delivery",
     saveChanges: "Save Changes",
     stopAgent: "Stop Agent",
     startAgent: "Start Agent",
@@ -102,6 +103,46 @@ const en = {
     minutesAgo: "{n}m ago",
     hoursAgo: "{n}h ago",
     daysAgo: "{n}d ago",
+  },
+  landing: {
+    nav: {
+      login: "Login",
+      register: "Sign Up Free",
+    },
+    hero: {
+      title: "Your AI WeChat Assistant",
+      subtitle: "Let AI serve you in WeChat. Check weather, manage schedules, answer questions — just send a message.",
+      cta: "Get Started Free",
+      ctaSecondary: "Login",
+      chat: {
+        botName: "Xiao An",
+        user1: "How's the weather in Shanghai today",
+        bot1: "🌤 Shanghai is sunny today, 25°C, feels comfortable. Strong UV this afternoon, don't forget sunscreen!",
+        bot2: "📅 You have 3 events today:\n10:00 Team standup\n14:00 Product review\n16:30 Client visit\nHave a great day!",
+        input: "Type a message...",
+      },
+    },
+    features: {
+      title: "Powerful Features, Simple to Use",
+      subtitle: "Enjoy the full power of AI right in WeChat",
+      chat: { title: "Smart Chat", desc: "Chat naturally — AI understands your needs and gives thoughtful responses." },
+      push: { title: "Scheduled Push", desc: "Automatic weather forecasts, news digests, and reminders so you never miss anything." },
+      memory: { title: "Memory & Learning", desc: "Remembers your preferences and habits, getting smarter and more personalized over time." },
+      multiAgent: { title: "Multi-Agent", desc: "Create dedicated assistants for different purposes: work helper, life organizer, study buddy." },
+      image: { title: "Image Generation", desc: "Describe the image you want, AI generates it and sends it directly to WeChat." },
+      noCode: { title: "Zero Code", desc: "Register and start using immediately. No technical knowledge required." },
+    },
+    howItWorks: {
+      title: "Get Started in 3 Steps",
+      step1: { title: "Sign Up", desc: "Just a username and password. Done in 30 seconds." },
+      step2: { title: "Bind WeChat", desc: "Scan the QR code to bind your WeChat, and your assistant goes live." },
+      step3: { title: "Start Chatting", desc: "Talk to your AI directly in WeChat and enjoy smart services." },
+    },
+    cta: {
+      title: "Ready to Get Started?",
+      subtitle: "Sign up for free and start your AI assistant journey",
+      button: "Try It Now",
+    },
   },
 };
 

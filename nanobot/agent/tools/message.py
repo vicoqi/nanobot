@@ -4,12 +4,17 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from loguru import logger
+
 from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.context import ContextAware, RequestContext
 from nanobot.agent.tools.path_utils import resolve_workspace_path
 from nanobot.agent.tools.schema import ArraySchema, StringSchema, tool_parameters_schema
 from nanobot.bus.events import OutboundMessage
 from nanobot.config.paths import get_workspace_path
+from nanobot.security.workspace_access import current_tool_workspace
+
+SendCallback = Callable[[OutboundMessage], Awaitable[bool | None]]
 
 
 @tool_parameters(
@@ -31,8 +36,8 @@ from nanobot.config.paths import get_workspace_path
         media=ArraySchema(
             StringSchema(""),
             description=(
-                "Optional list of existing file paths to attach for proactive or cross-channel delivery. "
-                "Do not use this to resend generate_image outputs in the current chat."
+                "Optional list of existing file paths to attach. "
+                "Use artifact paths returned by generate_image here when delivering generated images."
             ),
         ),
         buttons=ArraySchema(
@@ -47,7 +52,7 @@ class MessageTool(Tool, ContextAware):
 
     def __init__(
         self,
-        send_callback: Callable[[OutboundMessage], Awaitable[None]] | None = None,
+        send_callback: SendCallback | None = None,
         default_channel: str = "",
         default_chat_id: str = "",
         default_message_id: str | None = None,
@@ -82,6 +87,14 @@ class MessageTool(Tool, ContextAware):
             "message_record_channel_delivery",
             default=False,
         )
+        self._suppress_delivery_var: ContextVar[bool] = ContextVar(
+            "message_suppress_delivery",
+            default=False,
+        )
+        self._wait_for_channel_delivery_var: ContextVar[bool] = ContextVar(
+            "message_wait_for_channel_delivery",
+            default=False,
+        )
 
     @classmethod
     def create(cls, ctx: Any) -> Tool:
@@ -99,7 +112,7 @@ class MessageTool(Tool, ContextAware):
         self._default_message_id.set(ctx.message_id)
         self._default_metadata.set(dict(ctx.metadata or {}))
 
-    def set_send_callback(self, callback: Callable[[OutboundMessage], Awaitable[None]]) -> None:
+    def set_send_callback(self, callback: SendCallback) -> None:
         """Set the callback for sending messages."""
         self._send_callback = callback
 
@@ -119,6 +132,22 @@ class MessageTool(Tool, ContextAware):
     def reset_record_channel_delivery(self, token) -> None:
         """Restore previous proactive delivery recording state."""
         self._record_channel_delivery_var.reset(token)
+
+    def set_suppress_delivery(self, active: bool):
+        """Acknowledge but don't deliver tool sends (heartbeat internal check)."""
+        return self._suppress_delivery_var.set(active)
+
+    def reset_suppress_delivery(self, token) -> None:
+        """Restore previous delivery-suppression state."""
+        self._suppress_delivery_var.reset(token)
+
+    def set_wait_for_channel_delivery(self, active: bool):
+        """Require the send callback to confirm channel delivery before returning."""
+        return self._wait_for_channel_delivery_var.set(active)
+
+    def reset_wait_for_channel_delivery(self, token) -> None:
+        """Restore previous channel-delivery confirmation state."""
+        self._wait_for_channel_delivery_var.reset(token)
 
     @property
     def _sent_in_turn(self) -> bool:
@@ -140,8 +169,8 @@ class MessageTool(Tool, ContextAware):
             "Do not use this for the normal reply in the current chat: answer naturally instead. "
             "If channel/chat_id would target the current runtime conversation, do not call this tool "
             "unless the user explicitly asked you to proactively send an existing file attachment. "
-            "When generate_image creates images in the current chat, the final assistant reply "
-            "automatically attaches them; do not call message just to announce or resend them. "
+            "When generate_image creates images in the current chat, use the message tool "
+            "with the artifact paths in the media parameter to deliver the images to the user. "
             "For proactive attachment delivery, use the 'media' parameter with file paths. "
             "Do NOT use read_file to send files — that only reads content for your own analysis."
         )
@@ -149,15 +178,19 @@ class MessageTool(Tool, ContextAware):
     def _resolve_media(self, media: list[str]) -> list[str]:
         """Resolve local media attachments and enforce workspace restriction when enabled."""
         resolved: list[str] = []
-        allowed_dir = self._workspace if self._restrict_to_workspace else None
+        access = current_tool_workspace(
+            self._workspace,
+            restrict_to_workspace=self._restrict_to_workspace,
+        )
+        workspace = access.project_path or self._workspace
         for p in media:
             if p.startswith(("http://", "https://")):
                 resolved.append(p)
-            elif not self._restrict_to_workspace:
+            elif not access.restrict_to_workspace:
                 path = Path(p).expanduser()
-                resolved.append(p if path.is_absolute() else str(self._workspace / path))
+                resolved.append(p if path.is_absolute() else str(workspace / path))
             else:
-                resolved.append(str(resolve_workspace_path(p, self._workspace, allowed_dir)))
+                resolved.append(str(resolve_workspace_path(p, workspace, access.allowed_root)))
         return resolved
 
     async def execute(
@@ -226,6 +259,8 @@ class MessageTool(Tool, ContextAware):
             metadata["message_id"] = message_id
         if self._record_channel_delivery_var.get() or media:
             metadata["_record_channel_delivery"] = True
+        if self._wait_for_channel_delivery_var.get():
+            metadata["_wait_for_channel_delivery"] = True
 
         msg = OutboundMessage(
             channel=channel,
@@ -236,8 +271,14 @@ class MessageTool(Tool, ContextAware):
             metadata=metadata,
         )
 
+        if self._suppress_delivery_var.get():
+            logger.debug("MessageTool: delivery suppressed during internal check")
+            return f"Message acknowledged for {channel}:{chat_id} (not delivered)"
+
         try:
-            await self._send_callback(msg)
+            delivered = await self._send_callback(msg)
+            if delivered is False:
+                raise RuntimeError("Channel delivery failed")
             if channel == default_channel and chat_id == default_chat_id:
                 self._sent_in_turn = True
                 if media:

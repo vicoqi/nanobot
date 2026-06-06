@@ -78,7 +78,7 @@ export default function AdminPage() {
 
   if (!loggedIn) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex min-h-dvh items-center justify-center p-4">
         <form onSubmit={handleLogin} className="w-full max-w-sm space-y-4 p-6">
           <h1 className="text-2xl font-bold text-center">{t("admin.login")}</h1>
           <Input
@@ -96,19 +96,21 @@ export default function AdminPage() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl p-6">
-      <div className="flex items-center justify-between mb-6">
+    <div className="mx-auto max-w-5xl p-4 sm:p-6">
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-bold">{t("admin.title")}</h1>
-        <div className="flex gap-2">
+        <div className="grid grid-cols-2 gap-2 sm:flex">
           <Button
             variant="outline"
             size="sm"
             onClick={() => setLocale(locale === "zh" ? "en" : "zh")}
+            className="w-full sm:w-auto"
           >
             {locale === "zh" ? "中 / EN" : "EN / 中"}
           </Button>
           <Button
             variant="outline"
+            className="w-full sm:w-auto"
             onClick={() => {
               clearAdminToken();
               setLoggedIn(false);
@@ -120,7 +122,7 @@ export default function AdminPage() {
       </div>
 
       {stats && (
-        <div className="grid grid-cols-5 gap-4 mb-6">
+        <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           {[
             { label: t("admin.statsUsers"), value: stats.totalUsers },
             { label: t("admin.statsAgents"), value: stats.totalAgents },
@@ -136,11 +138,11 @@ export default function AdminPage() {
         </div>
       )}
 
-      <div className="flex gap-2 mb-4">
-        <Button variant={tab === "agents" ? "default" : "outline"} size="sm" onClick={() => setTab("agents")}>
+      <div className="mb-4 grid grid-cols-2 gap-2 sm:flex">
+        <Button className="w-full sm:w-auto" variant={tab === "agents" ? "default" : "outline"} size="sm" onClick={() => setTab("agents")}>
           {t("admin.tabAgents")}
         </Button>
-        <Button variant={tab === "users" ? "default" : "outline"} size="sm" onClick={() => setTab("users")}>
+        <Button className="w-full sm:w-auto" variant={tab === "users" ? "default" : "outline"} size="sm" onClick={() => setTab("users")}>
           {t("admin.tabUsers")}
         </Button>
       </div>
@@ -148,7 +150,8 @@ export default function AdminPage() {
       <Separator className="mb-4" />
 
       {tab === "agents" && (
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="min-w-[760px] w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
               <th className="py-2 pr-4">{t("admin.colId")}</th>
@@ -188,10 +191,12 @@ export default function AdminPage() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
 
       {tab === "users" && (
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="min-w-[520px] w-full text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
               <th className="py-2 pr-4">{t("admin.colId")}</th>
@@ -211,6 +216,7 @@ export default function AdminPage() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );

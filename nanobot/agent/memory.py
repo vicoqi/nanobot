@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import re
+import threading
 import weakref
 from contextlib import suppress
 from datetime import datetime
@@ -17,6 +18,7 @@ from loguru import logger
 
 from nanobot.agent.runner import AgentRunner, AgentRunSpec
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.daily_delivery import DAILY_DELIVERY_PLAN_PATH
 from nanobot.session.manager import Session
 from nanobot.utils.gitstore import GitStore
 from nanobot.utils.helpers import (
@@ -59,10 +61,15 @@ class MemoryStore:
         self.user_file = workspace / "USER.md"
         self._cursor_file = self.memory_dir / ".cursor"
         self._dream_cursor_file = self.memory_dir / ".dream_cursor"
+        self._dream_plan_cursor_file = self.memory_dir / ".dream_plan_cursor"
         self._corruption_logged = False  # rate-limit non-int cursor warning
         self._oversize_logged = False  # rate-limit oversized-entry warning
+        self._append_lock = threading.Lock()  # serialize cursor allocation + append
         self._git = GitStore(workspace, tracked_files=[
-            "SOUL.md", "USER.md", "memory/MEMORY.md", "memory/.dream_cursor",
+            "SOUL.md",
+            "USER.md",
+            "memory/MEMORY.md",
+            "memory/.dream_cursor",
         ])
         self._maybe_migrate_legacy_history()
 
@@ -248,7 +255,6 @@ class MemoryStore:
         large writes (e.g. an LLM echoing its input back as a "summary").
         """
         limit = max_chars if max_chars is not None else _HISTORY_ENTRY_HARD_CAP
-        cursor = self._next_cursor()
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
         raw = entry.rstrip()
         if len(raw) > limit:
@@ -262,16 +268,20 @@ class MemoryStore:
                 )
             raw = truncate_text(raw, limit)
         content = strip_think(raw)
-        if raw and not content:
-            logger.debug(
-                "history entry {} stripped to empty (likely template leak); "
-                "persisting empty content to avoid re-polluting context",
-                cursor,
-            )
-        record = {"cursor": cursor, "timestamp": ts, "content": content}
-        with open(self.history_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        self._cursor_file.write_text(str(cursor), encoding="utf-8")
+        # Cursor allocation and the append must be atomic: concurrent writers
+        # could otherwise read the same current cursor and emit duplicates.
+        with self._append_lock:
+            cursor = self._next_cursor()
+            if raw and not content:
+                logger.debug(
+                    "history entry {} stripped to empty (likely template leak); "
+                    "persisting empty content to avoid re-polluting context",
+                    cursor,
+                )
+            record = {"cursor": cursor, "timestamp": ts, "content": content}
+            with open(self.history_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self._cursor_file.write_text(str(cursor), encoding="utf-8")
         return cursor
 
     @staticmethod
@@ -399,6 +409,18 @@ class MemoryStore:
 
     def set_last_dream_cursor(self, cursor: int) -> None:
         self._dream_cursor_file.write_text(str(cursor), encoding="utf-8")
+
+    def has_last_dream_plan_cursor(self) -> bool:
+        return self._dream_plan_cursor_file.exists()
+
+    def get_last_dream_plan_cursor(self, default: int | None = None) -> int:
+        if self._dream_plan_cursor_file.exists():
+            with suppress(ValueError, OSError):
+                return int(self._dream_plan_cursor_file.read_text(encoding="utf-8").strip())
+        return default if default is not None else 0
+
+    def set_last_dream_plan_cursor(self, cursor: int) -> None:
+        self._dream_plan_cursor_file.write_text(str(cursor), encoding="utf-8")
 
     # -- message formatting utility ------------------------------------------
 
@@ -678,11 +700,18 @@ class Consolidator:
         The budget reserves space for completion tokens and a safety buffer
         so the LLM request never exceeds the context window.
         """
-        if not session.messages or self.context_window_tokens <= 0:
+        if self.context_window_tokens <= 0:
             return
 
         lock = self.get_lock(session.key)
         async with lock:
+            # Refresh session reference: AutoCompact may have replaced it.
+            fresh = self.sessions.get_or_create(session.key)
+            if fresh is not session:
+                session = fresh
+            if not session.messages:
+                return
+
             budget = self._input_token_budget
             target = int(budget * self.consolidation_ratio)
             last_summary = await self._consolidate_replay_overflow(
@@ -768,6 +797,73 @@ class Consolidator:
             # into the runtime context on the next prepare_session() call, aligning
             # the summary injection strategy with AutoCompact._archive().
             self._persist_last_summary(session, last_summary)
+
+    async def compact_idle_session(
+        self,
+        session_key: str,
+        max_suffix: int = 8,
+    ) -> str | None:
+        """Hard-truncate an idle session under the consolidation lock.
+
+        Used by AutoCompact so all session mutation goes through a single
+        lock-protected path.  Returns the summary text on success, ``None``
+        if the LLM failed (raw_archive fallback), or ``""`` if there was
+        nothing to archive.
+        """
+        lock = self.get_lock(session_key)
+        async with lock:
+            self.sessions.invalidate(session_key)
+            session = self.sessions.get_or_create(session_key)
+
+            tail = list(session.messages[session.last_consolidated:])
+            if not tail:
+                session.updated_at = datetime.now()
+                self.sessions.save(session)
+                return ""
+
+            probe = Session(
+                key=session.key,
+                messages=tail.copy(),
+                created_at=session.created_at,
+                updated_at=session.updated_at,
+                metadata={},
+                last_consolidated=0,
+            )
+            dropped, already_consolidated = probe.retain_recent_legal_suffix(max_suffix)
+            kept = probe.messages
+            archive_msgs = dropped[already_consolidated:]
+
+            if not archive_msgs and not kept:
+                session.updated_at = datetime.now()
+                self.sessions.save(session)
+                return ""
+
+            last_active = session.updated_at
+            summary: str | None = ""
+            if archive_msgs:
+                summary = await self.archive(archive_msgs)
+
+            if summary and summary != "(nothing)":
+                session.metadata["_last_summary"] = {
+                    "text": summary,
+                    "last_active": last_active.isoformat(),
+                }
+
+            session.messages = kept
+            session.last_consolidated = 0
+            session.updated_at = datetime.now()
+            self.sessions.save(session)
+
+            if archive_msgs:
+                logger.info(
+                    "Idle-session compact for {}: archived={}, kept={}, summary={}",
+                    session_key,
+                    len(archive_msgs),
+                    len(kept),
+                    bool(summary),
+                )
+
+            return summary
 
 
 # ---------------------------------------------------------------------------
@@ -1084,4 +1180,256 @@ class Dream:
             if sha:
                 logger.info("Dream commit: {}", sha)
 
+        return True
+
+
+class DreamPlan:
+    """Plan-only Dream pass that maintains the daily delivery strategy file."""
+
+    _MEMORY_FILE_MAX_CHARS = 32_000
+    _USER_FILE_MAX_CHARS = 16_000
+    _PLAN_FILE_MAX_CHARS = 16_000
+    _HISTORY_ENTRY_PREVIEW_MAX_CHARS = 4_000
+    _DAILY_REVIEW_RE = re.compile(r'(?m)^last_daily_reviewed_on:\s*"?([^"\n]*)"?\s*$')
+    _TODAY_INTENT_RE = re.compile(
+        r"(?ms)^## Today Delivery Intent\s*\n(?P<section>.*?)(?=^## |\Z)"
+    )
+    _TODAY_INTENT_REQUIRED_KEYS = (
+        "date",
+        "status",
+        "delivery_type",
+        "topic",
+        "why_today",
+        "signal_source",
+        "audience",
+        "tone",
+        "message_goal",
+        "hook",
+        "reply_question",
+        "fetch_policy",
+        "output_contract",
+    )
+    _TODAY_INTENT_INVALID_KEYS = ("type", "intent", "goal", "language")
+
+    def __init__(
+        self,
+        store: MemoryStore,
+        provider: LLMProvider,
+        model: str,
+        max_batch_size: int = 20,
+        max_iterations: int = 10,
+        max_tool_result_chars: int = 16_000,
+    ):
+        self.store = store
+        self.provider = provider
+        self.model = model
+        self.max_batch_size = max_batch_size
+        self.max_iterations = max_iterations
+        self.max_tool_result_chars = max_tool_result_chars
+        self._runner = AgentRunner(provider)
+        self._tools = self._build_tools()
+
+    def set_provider(self, provider: LLMProvider, model: str) -> None:
+        self.provider = provider
+        self.model = model
+        self._runner.provider = provider
+
+    def _build_tools(self) -> ToolRegistry:
+        from nanobot.agent.tools.file_state import FileStates
+        from nanobot.agent.tools.filesystem import EditFileTool, ReadFileTool, WriteFileTool
+
+        tools = ToolRegistry()
+        workspace = self.store.workspace
+        plan_path = workspace / DAILY_DELIVERY_PLAN_PATH
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        file_states = FileStates()
+        tools.register(ReadFileTool(workspace=workspace, allowed_dir=plan_path, file_states=file_states))
+        tools.register(EditFileTool(workspace=workspace, allowed_dir=plan_path, file_states=file_states))
+        tools.register(WriteFileTool(workspace=workspace, allowed_dir=plan_path, file_states=file_states))
+        return tools
+
+    @classmethod
+    def _last_daily_reviewed_on(cls, plan_text: str) -> str:
+        match = cls._DAILY_REVIEW_RE.search(plan_text)
+        return match.group(1).strip() if match else ""
+
+    @classmethod
+    def _needs_daily_refresh(cls, plan_text: str, current_date: str) -> bool:
+        if not plan_text.strip() or plan_text.strip() == "(missing)":
+            return True
+        if cls._last_daily_reviewed_on(plan_text) != current_date:
+            return True
+        return not cls._has_strict_today_intent_schema(plan_text)
+
+    @classmethod
+    def _has_strict_today_intent_schema(cls, plan_text: str) -> bool:
+        match = cls._TODAY_INTENT_RE.search(plan_text)
+        if not match:
+            return False
+        section = match.group("section")
+        for key in cls._TODAY_INTENT_INVALID_KEYS:
+            if re.search(rf"(?m)^-\s+{re.escape(key)}\s*:", section):
+                return False
+        if re.search(r"(?m)^###\s+(Inputs|Fetch Policy|Output Contract)\s*$", section):
+            return False
+        for key in cls._TODAY_INTENT_REQUIRED_KEYS:
+            field = re.search(rf"(?m)^-\s+{re.escape(key)}\s*:\s*(.+?)\s*$", section)
+            if not field or not field.group(1).strip():
+                return False
+        return True
+
+    async def run(self, *, default_since_cursor: int | None = None) -> bool:
+        """Process unprocessed history entries for PLAN.md only."""
+        if not self.store.has_last_dream_plan_cursor():
+            seed_cursor = (
+                default_since_cursor
+                if default_since_cursor is not None
+                else self.store.get_last_dream_cursor()
+            )
+            self.store.set_last_dream_plan_cursor(seed_cursor)
+            last_cursor = seed_cursor
+        else:
+            last_cursor = self.store.get_last_dream_plan_cursor()
+
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        plan_path = self.store.workspace / DAILY_DELIVERY_PLAN_PATH
+        current_plan = truncate_text(
+            self.store.read_file(plan_path) or "(missing)",
+            self._PLAN_FILE_MAX_CHARS,
+        )
+        needs_daily_refresh = self._needs_daily_refresh(current_plan, current_date)
+        entries = self.store.read_unprocessed_history(since_cursor=last_cursor)
+        if not entries and not needs_daily_refresh:
+            return False
+
+        batch = entries[: self.max_batch_size]
+        review_mode = "history_update" if batch else "daily_refresh"
+        if batch:
+            logger.info(
+                "DreamPlan: processing {} entries (cursor {}→{}), batch={}",
+                len(entries), last_cursor, batch[-1]["cursor"], len(batch),
+            )
+        else:
+            logger.info(
+                "DreamPlan: daily refresh for {} (cursor {}, no new history)",
+                current_date, last_cursor,
+            )
+
+        if batch:
+            history_text = "\n".join(
+                f"[{e['timestamp']}] "
+                f"{truncate_text(e['content'], self._HISTORY_ENTRY_PREVIEW_MAX_CHARS)}"
+                for e in batch
+            )
+        else:
+            history_text = (
+                f"(no new archived history since cursor {last_cursor}; "
+                "refresh today's delivery intent from current USER.md, MEMORY.md, and PLAN.md)"
+            )
+
+        current_memory = truncate_text(
+            self.store.read_memory() or "(empty)",
+            self._MEMORY_FILE_MAX_CHARS,
+        )
+        current_user = truncate_text(
+            self.store.read_user() or "(empty)",
+            self._USER_FILE_MAX_CHARS,
+        )
+
+        file_context = (
+            f"## Review Mode\n{review_mode}\n\n"
+            f"## Current Date\n{current_date}\n\n"
+            f"## Current USER.md ({len(current_user)} chars)\n{current_user}\n\n"
+            f"## Current MEMORY.md ({len(current_memory)} chars)\n{current_memory}\n\n"
+            f"## Current {DAILY_DELIVERY_PLAN_PATH} ({len(current_plan)} chars)\n{current_plan}"
+        )
+
+        phase1_prompt = (
+            f"## Conversation History\n{history_text}\n\n{file_context}"
+        )
+
+        try:
+            phase1_response = await self.provider.chat_with_retry(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": render_template(
+                            "agent/dream_plan_phase1.md",
+                            strip=True,
+                        ),
+                    },
+                    {"role": "user", "content": phase1_prompt},
+                ],
+                tools=None,
+                tool_choice=None,
+            )
+            analysis = phase1_response.content or ""
+            logger.debug("DreamPlan Phase 1 analysis ({} chars): {}", len(analysis), analysis[:500])
+        except Exception:
+            logger.exception("DreamPlan Phase 1 failed")
+            return False
+
+        phase2_prompt = f"## Analysis Result\n{analysis}\n\n{file_context}"
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": render_template(
+                    "agent/dream_plan_phase2.md",
+                    strip=True,
+                    plan_path=str(DAILY_DELIVERY_PLAN_PATH),
+                ),
+            },
+            {"role": "user", "content": phase2_prompt},
+        ]
+
+        try:
+            result = await self._runner.run(AgentRunSpec(
+                initial_messages=messages,
+                tools=self._tools,
+                model=self.model,
+                max_iterations=self.max_iterations,
+                max_tool_result_chars=self.max_tool_result_chars,
+                fail_on_tool_error=False,
+            ))
+            logger.debug(
+                "DreamPlan Phase 2 complete: stop_reason={}, tool_events={}",
+                result.stop_reason, len(result.tool_events),
+            )
+            for ev in (result.tool_events or []):
+                logger.info(
+                    "DreamPlan tool_event: name={}, status={}, detail={}",
+                    ev.get("name"), ev.get("status"), ev.get("detail", "")[:200],
+                )
+        except Exception:
+            logger.exception("DreamPlan Phase 2 failed")
+            result = None
+
+        if result and result.stop_reason == "completed":
+            ok_events = len([
+                event for event in (result.tool_events or [])
+                if event["status"] == "ok"
+            ])
+            if batch:
+                new_cursor = batch[-1]["cursor"]
+                self.store.set_last_dream_plan_cursor(new_cursor)
+                logger.info(
+                    "DreamPlan done: {} change(s), cursor advanced to {}",
+                    ok_events,
+                    new_cursor,
+                )
+            else:
+                logger.info(
+                    "DreamPlan daily refresh done: {} change(s), cursor remains {}",
+                    ok_events,
+                    last_cursor,
+                )
+        else:
+            reason = result.stop_reason if result else "exception"
+            logger.warning(
+                "DreamPlan incomplete ({}): cursor NOT advanced, will retry next dream cycle",
+                reason,
+            )
+
+        self.store.compact_history()
         return True

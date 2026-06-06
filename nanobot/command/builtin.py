@@ -123,7 +123,7 @@ async def cmd_stop(ctx: CommandContext) -> OutboundMessage:
     """Cancel all active tasks and subagents for the session."""
     loop = ctx.loop
     msg = ctx.msg
-    total = await loop._cancel_active_tasks(msg.session_key)
+    total = await loop._cancel_active_tasks(ctx.key)
     content = f"Stopped {total} task(s)." if total else "No active task to stop."
     return OutboundMessage(
         channel=msg.channel, chat_id=msg.chat_id, content=content,
@@ -307,7 +307,8 @@ async def cmd_dream(ctx: CommandContext) -> OutboundMessage:
     async def _run_dream():
         t0 = time.monotonic()
         try:
-            did_work = await loop.dream.run()
+            result = await loop.run_dream_passes()
+            did_work = result["memory"] or result["plan"]
             elapsed = time.monotonic() - t0
             if did_work:
                 content = f"Dream completed in {elapsed:.1f}s."

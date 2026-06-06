@@ -93,13 +93,13 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl p-6">
-      <div className="flex items-center justify-between mb-6">
+    <div className="mx-auto max-w-4xl p-4 sm:p-6">
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-bold">{t("dashboard.title")}</h1>
-        <div className="flex gap-2">
+        <div className="grid grid-cols-2 gap-2 sm:flex">
           <Dialog open={showCreate} onOpenChange={setShowCreate}>
             <DialogTrigger asChild>
-              <Button>{t("dashboard.create")}</Button>
+              <Button className="col-span-2 sm:col-span-1">{t("dashboard.create")}</Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
@@ -107,7 +107,7 @@ export default function DashboardPage() {
               </DialogHeader>
               <div className="space-y-4 pt-2">
                 <Input placeholder={t("dashboard.agentName")} value={name} onChange={(e) => setName(e.target.value)} />
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid gap-3 sm:grid-cols-3">
                   <select
                     value={language}
                     onChange={(e) => setLanguage(e.target.value)}
@@ -142,11 +142,13 @@ export default function DashboardPage() {
             variant="outline"
             size="sm"
             onClick={() => setLocale(locale === "zh" ? "en" : "zh")}
+            className="w-full sm:w-auto"
           >
             {locale === "zh" ? "中 / EN" : "EN / 中"}
           </Button>
           <Button
             variant="outline"
+            className="w-full sm:w-auto"
             onClick={() => {
               clearToken();
               navigate("/login");
@@ -169,21 +171,21 @@ export default function DashboardPage() {
               className="rounded-lg border bg-card p-4 space-y-3 cursor-pointer hover:border-primary/50 transition-colors"
               onClick={() => navigate(`/agent/${agent.id}`)}
             >
-              <div className="flex items-center justify-between">
-                <h3 className="font-semibold">{agent.name}</h3>
+              <div className="flex items-start justify-between gap-3">
+                <h3 className="min-w-0 break-words font-semibold">{agent.name}</h3>
                 <StatusBadge status={agent.status} />
               </div>
               {agent.soul && <p className="text-sm text-muted-foreground line-clamp-2">{agent.soul}</p>}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                   <span>{agent.lastActiveAt ? formatRelativeTime(agent.lastActiveAt, t) : t("dashboard.neverActive")}</span>
                   <span>{agent.wechatBound ? t("dashboard.wechatBound") : t("dashboard.notBound")}</span>
                 </div>
-                <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
-                  <Button size="sm" variant="outline" onClick={() => handleToggle(agent)}>
+                <div className="grid grid-cols-2 gap-2 sm:flex sm:gap-1" onClick={(e) => e.stopPropagation()}>
+                  <Button size="sm" variant="outline" className="w-full sm:w-auto" onClick={() => handleToggle(agent)}>
                     {agent.status === "running" ? t("common.stop") : t("common.start")}
                   </Button>
-                  <Button size="sm" variant="destructive" onClick={() => handleDelete(agent.id)}>
+                  <Button size="sm" variant="destructive" className="w-full sm:w-auto" onClick={() => handleDelete(agent.id)}>
                     {t("common.delete")}
                   </Button>
                 </div>

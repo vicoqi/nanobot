@@ -6,6 +6,10 @@
 .env
 .web
 .orion
+nanobot-desktop/
+desktop/
+**/skills/daily-channel-delivery/.delivery_state.json
+deploy/manager-config.json
 
 # Claude / AI assistant artifacts
 docs/superpowers/
@@ -44,6 +48,9 @@ dmypy.json
 # Build & packaging
 dist/
 build/
+deploy/.checkout-*/
+deploy/artifacts/
+/runtime/
 *.manifest
 *.spec
 pip-wheel-metadata/
@@ -99,3 +106,5 @@ logs/
 tmp/
 temp/
 *.tmp
+exp/
+.playwright-mcp/
