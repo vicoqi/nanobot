@@ -104,6 +104,46 @@ const zh = {
     hoursAgo: "{n}小时前",
     daysAgo: "{n}天前",
   },
+  landing: {
+    nav: {
+      login: "登录",
+      register: "免费注册",
+    },
+    hero: {
+      title: "你的 AI 微信助手",
+      subtitle: "让 AI 在微信里为你服务。查天气、管日程、答问题，只需发条消息。",
+      cta: "免费开始",
+      ctaSecondary: "登录",
+      chat: {
+        botName: "小安",
+        user1: "今天上海天气怎么样",
+        bot1: "🌤 上海今天晴，25°C，体感舒适。下午紫外线较强，出门记得防晒哦！",
+        bot2: "📅 今天有 3 个日程：\n10:00 团队周会\n14:00 产品评审\n16:30 客户拜访\n祝老板一切顺利！",
+        input: "输入消息...",
+      },
+    },
+    features: {
+      title: "强大功能，简单使用",
+      subtitle: "在微信中享受 AI 的全部能力",
+      chat: { title: "智能对话", desc: "像和朋友聊天一样，AI 理解你的需求，给出贴心的回答。" },
+      push: { title: "定时推送", desc: "每天自动推送天气预报、新闻摘要、日程提醒，不遗漏重要信息。" },
+      memory: { title: "记忆学习", desc: "记住你的偏好和习惯，越用越懂你，服务越来越贴心。" },
+      multiAgent: { title: "多 Agent 管理", desc: "为不同场景创建专属助手：工作助手、生活管家、学习伙伴。" },
+      image: { title: "图像生成", desc: "描述你想要的图片，AI 为你生成，直接发送到微信。" },
+      noCode: { title: "零代码使用", desc: "注册即可使用，无需任何技术知识。简单几步，AI 助手上线。" },
+    },
+    howItWorks: {
+      title: "三步开始使用",
+      step1: { title: "注册账号", desc: "只需用户名和密码，30 秒完成。" },
+      step2: { title: "绑定微信", desc: "扫码绑定你的微信，AI 助手即刻上线。" },
+      step3: { title: "开始聊天", desc: "在微信中直接对话，享受智能服务。" },
+    },
+    cta: {
+      title: "准备好体验了吗？",
+      subtitle: "免费注册，立即开始你的 AI 助手之旅",
+      button: "立即体验",
+    },
+  },
 };
 
 export default zh;
