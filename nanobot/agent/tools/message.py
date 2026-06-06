@@ -10,9 +10,11 @@ from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.context import ContextAware, RequestContext
 from nanobot.agent.tools.path_utils import resolve_workspace_path
 from nanobot.agent.tools.schema import ArraySchema, StringSchema, tool_parameters_schema
-from nanobot.security.workspace_access import current_tool_workspace
 from nanobot.bus.events import OutboundMessage
 from nanobot.config.paths import get_workspace_path
+from nanobot.security.workspace_access import current_tool_workspace
+
+SendCallback = Callable[[OutboundMessage], Awaitable[bool | None]]
 
 
 @tool_parameters(
@@ -50,7 +52,7 @@ class MessageTool(Tool, ContextAware):
 
     def __init__(
         self,
-        send_callback: Callable[[OutboundMessage], Awaitable[None]] | None = None,
+        send_callback: SendCallback | None = None,
         default_channel: str = "",
         default_chat_id: str = "",
         default_message_id: str | None = None,
@@ -89,6 +91,10 @@ class MessageTool(Tool, ContextAware):
             "message_suppress_delivery",
             default=False,
         )
+        self._wait_for_channel_delivery_var: ContextVar[bool] = ContextVar(
+            "message_wait_for_channel_delivery",
+            default=False,
+        )
 
     @classmethod
     def create(cls, ctx: Any) -> Tool:
@@ -106,7 +112,7 @@ class MessageTool(Tool, ContextAware):
         self._default_message_id.set(ctx.message_id)
         self._default_metadata.set(dict(ctx.metadata or {}))
 
-    def set_send_callback(self, callback: Callable[[OutboundMessage], Awaitable[None]]) -> None:
+    def set_send_callback(self, callback: SendCallback) -> None:
         """Set the callback for sending messages."""
         self._send_callback = callback
 
@@ -134,6 +140,14 @@ class MessageTool(Tool, ContextAware):
     def reset_suppress_delivery(self, token) -> None:
         """Restore previous delivery-suppression state."""
         self._suppress_delivery_var.reset(token)
+
+    def set_wait_for_channel_delivery(self, active: bool):
+        """Require the send callback to confirm channel delivery before returning."""
+        return self._wait_for_channel_delivery_var.set(active)
+
+    def reset_wait_for_channel_delivery(self, token) -> None:
+        """Restore previous channel-delivery confirmation state."""
+        self._wait_for_channel_delivery_var.reset(token)
 
     @property
     def _sent_in_turn(self) -> bool:
@@ -245,6 +259,8 @@ class MessageTool(Tool, ContextAware):
             metadata["message_id"] = message_id
         if self._record_channel_delivery_var.get() or media:
             metadata["_record_channel_delivery"] = True
+        if self._wait_for_channel_delivery_var.get():
+            metadata["_wait_for_channel_delivery"] = True
 
         msg = OutboundMessage(
             channel=channel,
@@ -260,7 +276,9 @@ class MessageTool(Tool, ContextAware):
             return f"Message acknowledged for {channel}:{chat_id} (not delivered)"
 
         try:
-            await self._send_callback(msg)
+            delivered = await self._send_callback(msg)
+            if delivered is False:
+                raise RuntimeError("Channel delivery failed")
             if channel == default_channel and chat_id == default_chat_id:
                 self._sent_in_turn = True
                 if media:

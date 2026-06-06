@@ -700,10 +700,11 @@ async def test_send_with_retry_retries_on_failure():
 
     # Patch asyncio.sleep to avoid actual delays
     with patch("nanobot.channels.manager.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-        await mgr._send_with_retry(mgr.channels["failing"], msg)
+        delivered = await mgr._send_with_retry(mgr.channels["failing"], msg)
 
     assert call_count == 3  # 3 total attempts (initial + 2 retries)
     assert mock_sleep.call_count == 2  # 2 sleeps between retries
+    assert delivered is False
 
 
 @pytest.mark.asyncio
@@ -740,9 +741,10 @@ async def test_send_with_retry_no_retry_when_max_is_zero():
     msg = OutboundMessage(channel="failing", chat_id="123", content="test")
 
     with patch("nanobot.channels.manager.asyncio.sleep", new_callable=AsyncMock):
-        await mgr._send_with_retry(mgr.channels["failing"], msg)
+        delivered = await mgr._send_with_retry(mgr.channels["failing"], msg)
 
     assert call_count == 1  # Called once but no retry (max(0, 1) = 1)
+    assert delivered is False
 
 
 @pytest.mark.asyncio
@@ -782,9 +784,10 @@ async def test_send_with_retry_calls_send_delta():
         channel="streaming", chat_id="123", content="test delta",
         metadata={"_stream_delta": True}
     )
-    await mgr._send_with_retry(mgr.channels["streaming"], msg)
+    delivered = await mgr._send_with_retry(mgr.channels["streaming"], msg)
 
     assert send_delta_called is True
+    assert delivered is True
 
 
 @pytest.mark.asyncio

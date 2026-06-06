@@ -1640,6 +1640,10 @@ def test_gateway_daily_delivery_uses_latest_external_session(
         def __init__(self, _config, _bus, **_kwargs) -> None:
             self.enabled_channels = ["telegram"]
 
+        async def send_outbound_now(self, msg: OutboundMessage) -> bool:
+            seen["direct_outbound"] = msg
+            return True
+
         async def start_all(self) -> None:
             await asyncio.Event().wait()
 
@@ -1694,9 +1698,10 @@ def test_gateway_daily_delivery_uses_latest_external_session(
     assert seen["process_kwargs"]["session_key"] == DAILY_DELIVERY_JOB_ID
     assert seen["process_kwargs"]["channel"] == "telegram"
     assert seen["process_kwargs"]["chat_id"] == "user-9"
-    bus.publish_outbound.assert_awaited_once_with(
-        OutboundMessage(channel="telegram", chat_id="user-9", content="Morning brief.")
+    assert seen["direct_outbound"] == OutboundMessage(
+        channel="telegram", chat_id="user-9", content="Morning brief."
     )
+    bus.publish_outbound.assert_not_awaited()
     assert seen["session_key"] == "telegram:user-9"
     saved_session = seen["saved_session"]
     assert isinstance(saved_session, _FakeSession)
@@ -1707,6 +1712,179 @@ def test_gateway_daily_delivery_uses_latest_external_session(
             "_channel_delivery": True,
         }
     ]
+
+
+def test_gateway_daily_delivery_does_not_mark_plan_sent_when_channel_send_fails(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_file = _write_instance_config(tmp_path)
+    config = Config()
+    config.agents.defaults.daily_delivery.enabled = True
+    config.gateway.heartbeat.enabled = False
+    config.agents.defaults.workspace = str(tmp_path / "config-workspace")
+    workspace = Path(config.agents.defaults.workspace)
+    plan_path = workspace / DAILY_DELIVERY_PLAN_PATH
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text("# Daily Delivery Plan\n\n## Today Delivery Intent\n", encoding="utf-8")
+    plan_hash = hash_daily_delivery_plan(workspace)
+    bus = MagicMock()
+    bus.publish_outbound = AsyncMock()
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr("nanobot.config.loader.set_config_path", lambda _path: None)
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda _path=None: config)
+    monkeypatch.setattr("nanobot.config.loader.resolve_config_env_vars", lambda c: c)
+    monkeypatch.setattr("nanobot.cli.commands.sync_workspace_templates", lambda _path: None)
+    monkeypatch.setattr(
+        "nanobot.providers.factory.build_provider_snapshot",
+        lambda _config: _test_provider_snapshot(object(), _config),
+    )
+    monkeypatch.setattr(
+        "nanobot.providers.factory.load_provider_snapshot",
+        lambda _config_path=None: _test_provider_snapshot(object(), config),
+    )
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", lambda: bus)
+
+    class _FakeSessionManager:
+        def __init__(self, _workspace: Path) -> None:
+            return None
+
+        def list_sessions(self) -> list[dict[str, str]]:
+            return [{"key": "telegram:user-9", "updated_at": "2026-05-27T09:00:00"}]
+
+        def get_or_create(self, _key: str):
+            raise AssertionError("failed delivery must not be recorded in session history")
+
+        def save(self, _session) -> None:
+            raise AssertionError("failed delivery must not be recorded in session history")
+
+        def flush_all(self) -> int:
+            return 0
+
+    monkeypatch.setattr("nanobot.session.manager.SessionManager", _FakeSessionManager)
+
+    class _FakeDream:
+        model = None
+        max_batch_size = 0
+        max_iterations = 0
+        annotate_line_ages = True
+
+        async def run(self) -> None:
+            return None
+
+    class _FakeDreamPlan(_FakeDream):
+        pass
+
+    class _FakeAgentLoop:
+        @classmethod
+        def from_config(cls, _config, bus=None, **extra):
+            return cls()
+
+        def __init__(self) -> None:
+            self.model = "test-model"
+            self.provider = object()
+            self.dream = _FakeDream()
+            self.dream_plan = _FakeDreamPlan()
+            self.sessions = _FakeSessionManager(Path("."))
+            self.tools = {}
+
+        async def run_dream_passes(self) -> dict[str, bool]:
+            return {"memory": False, "plan": False}
+
+        async def process_direct(self, *_args, **_kwargs):
+            return OutboundMessage(
+                channel="telegram",
+                chat_id="user-9",
+                content="Morning brief.",
+            )
+
+        async def close_mcp(self) -> None:
+            return None
+
+        async def run(self) -> None:
+            await asyncio.Event().wait()
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCron:
+        def __init__(self, _store_path: Path) -> None:
+            self.on_job = None
+            seen["cron"] = self
+
+        async def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+        def status(self) -> dict[str, int]:
+            return {"jobs": 0}
+
+        def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
+            return []
+
+        def register_system_job(self, _job) -> None:
+            return None
+
+    class _FakeChannelManager:
+        def __init__(self, _config, _bus, **_kwargs) -> None:
+            self.enabled_channels = ["telegram"]
+
+        async def send_outbound_now(self, msg: OutboundMessage) -> bool:
+            seen["direct_outbound"] = msg
+            return False
+
+        async def start_all(self) -> None:
+            await asyncio.Event().wait()
+
+        async def stop_all(self) -> None:
+            return None
+
+    class _FakeServer:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        async def serve_forever(self) -> None:
+            raise _StopGatewayError("stop")
+
+    async def _fake_start_server(handler, host: str, port: int):
+        return _FakeServer()
+
+    async def _always_notify(*_args, **_kwargs) -> bool:
+        return True
+
+    monkeypatch.setattr("nanobot.cli.commands.AgentLoop", _FakeAgentLoop)
+    monkeypatch.setattr("nanobot.cron.service.CronService", _FakeCron)
+    monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _FakeChannelManager)
+    monkeypatch.setattr("asyncio.start_server", _fake_start_server)
+    monkeypatch.setattr("nanobot.cli.commands.evaluate_response", _always_notify)
+
+    result = runner.invoke(app, ["gateway", "--config", str(config_file)])
+
+    assert result.exit_code == 0
+    cron = seen["cron"]
+    assert isinstance(cron, _FakeCron)
+    assert cron.on_job is not None
+
+    response = asyncio.run(
+        cron.on_job(CronJob(id=DAILY_DELIVERY_JOB_ID, name=DAILY_DELIVERY_JOB_NAME, payload=CronPayload(kind="system_event")))
+    )
+
+    assert response == "Morning brief."
+    assert seen["direct_outbound"] == OutboundMessage(
+        channel="telegram", chat_id="user-9", content="Morning brief."
+    )
+    bus.publish_outbound.assert_not_awaited()
+    state = json.loads((workspace / DAILY_DELIVERY_STATE_PATH).read_text(encoding="utf-8"))
+    assert state["lastStatus"] == "send_failed"
+    assert state["lastAttemptedPlanHash"] == plan_hash
+    assert "lastPlanHash" not in state
+    assert isinstance(state["lastFailedAtMs"], int)
+    assert "Channel delivery failed for telegram:user-9" in state["lastError"]
 
 
 def test_gateway_daily_delivery_skips_when_plan_hash_unchanged(

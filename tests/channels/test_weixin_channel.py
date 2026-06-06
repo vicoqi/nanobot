@@ -824,6 +824,31 @@ async def test_send_media_falls_back_to_upload_param_url(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_media_invalidates_context_token_on_ret_minus_two(tmp_path) -> None:
+    channel, _bus = _make_channel()
+
+    media_file = tmp_path / "photo.jpg"
+    media_file.write_bytes(b"hello-weixin")
+
+    channel._context_tokens["wx-user"] = "ctx-stale"
+    channel._context_token_at["wx-user"] = time.time()
+    cdn_post = AsyncMock(return_value=_DummyHttpResponse(headers={"x-encrypted-param": "dl-param"}))
+    channel._client = SimpleNamespace(post=cdn_post)
+    channel._api_post = AsyncMock(
+        side_effect=[
+            {"upload_full_url": "https://upload-full.example.test/path?foo=bar"},
+            {"ret": -2, "errcode": 0},
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="WeChat send media error.*ret=-2.*errcode=0"):
+        await channel._send_media_file("wx-user", str(media_file), "ctx-stale")
+
+    assert "wx-user" not in channel._context_tokens
+    assert "wx-user" not in channel._context_token_at
+
+
+@pytest.mark.asyncio
 async def test_send_media_voice_file_uses_voice_item_and_voice_upload_type(tmp_path) -> None:
     channel, _bus = _make_channel()
 
@@ -1358,6 +1383,24 @@ async def test_send_text_raises_on_nonzero_ret_even_when_errcode_zero() -> None:
         await channel._send_text("wx-user", "hello", "ctx-ok")
 
     channel._api_post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_text_invalidates_context_token_on_ret_minus_two() -> None:
+    channel, _bus = _make_channel()
+    channel._client = object()
+    channel._token = "token"
+    channel._context_tokens["wx-user"] = "ctx-stale"
+    channel._context_token_at["wx-user"] = time.time()
+    channel._typing_tickets["wx-user"] = {"ticket": "typing-ticket"}
+    channel._api_post = AsyncMock(return_value={"ret": -2, "errcode": 0})
+
+    with pytest.raises(RuntimeError, match="WeChat send text error.*ret=-2.*errcode=0"):
+        await channel._send_text("wx-user", "hello", "ctx-stale")
+
+    assert "wx-user" not in channel._context_tokens
+    assert "wx-user" not in channel._context_token_at
+    assert "wx-user" not in channel._typing_tickets
 
 
 # ---------------------------------------------------------------------------

@@ -81,6 +81,38 @@ async def test_message_tool_marks_channel_delivery_only_when_enabled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_message_tool_reports_callback_delivery_failure() -> None:
+    async def _send(_msg: OutboundMessage) -> bool:
+        return False
+
+    tool = MessageTool(send_callback=_send, default_channel="telegram", default_chat_id="1")
+
+    result = await tool.execute(content="cron")
+
+    assert result == "Error sending message: Channel delivery failed"
+    assert tool._sent_in_turn is False
+
+
+@pytest.mark.asyncio
+async def test_message_tool_can_require_channel_delivery_confirmation() -> None:
+    sent: list[OutboundMessage] = []
+
+    async def _send(msg: OutboundMessage) -> bool:
+        sent.append(msg)
+        return True
+
+    tool = MessageTool(send_callback=_send)
+    token = tool.set_wait_for_channel_delivery(True)
+    try:
+        result = await tool.execute(content="cron", channel="telegram", chat_id="1")
+    finally:
+        tool.reset_wait_for_channel_delivery(token)
+
+    assert result == "Message sent to telegram:1"
+    assert sent[0].metadata == {"_wait_for_channel_delivery": True}
+
+
+@pytest.mark.asyncio
 async def test_message_tool_records_media_deliveries() -> None:
     sent: list[OutboundMessage] = []
 

@@ -459,7 +459,29 @@ class ChannelManager:
         )
         return merged, non_matching
 
-    async def _send_with_retry(self, channel: BaseChannel, msg: OutboundMessage) -> None:
+    async def send_outbound_now(self, msg: OutboundMessage) -> bool:
+        """Synchronously send an outbound message and report delivery success."""
+        channel = self.channels.get(msg.channel)
+        if channel is None:
+            logger.warning("Unknown channel: {}", msg.channel)
+            return False
+
+        if (
+            not msg.metadata.get("_stream_delta")
+            and not msg.metadata.get("_stream_end")
+            and not msg.metadata.get("_streamed")
+            and self._should_suppress_outbound(msg)
+        ):
+            logger.info(
+                "Suppressing duplicate outbound message to {}:{}",
+                msg.channel,
+                msg.chat_id,
+            )
+            return True
+
+        return await self._send_with_retry(channel, msg)
+
+    async def _send_with_retry(self, channel: BaseChannel, msg: OutboundMessage) -> bool:
         """Send a message with retry on failure using exponential backoff.
 
         Note: CancelledError is re-raised to allow graceful shutdown.
@@ -469,7 +491,7 @@ class ChannelManager:
         for attempt in range(max_attempts):
             try:
                 await self._send_once(channel, msg)
-                return  # Send succeeded
+                return True
             except asyncio.CancelledError:
                 raise  # Propagate cancellation for graceful shutdown
             except Exception as e:
@@ -478,7 +500,7 @@ class ChannelManager:
                         "Failed to send to {} after {} attempts",
                         msg.channel, max_attempts
                     )
-                    return
+                    return False
                 delay = _SEND_RETRY_DELAYS[min(attempt, len(_SEND_RETRY_DELAYS) - 1)]
                 logger.warning(
                     "Send to {} failed (attempt {}/{}): {}, retrying in {}s",

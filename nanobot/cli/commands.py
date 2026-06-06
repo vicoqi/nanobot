@@ -995,25 +995,10 @@ def _run_gateway(
             else f"{channel}:{chat_id}"
         )
 
-    async def _deliver_to_channel(
-        msg: OutboundMessage, *, record: bool = False, session_key: str | None = None,
-    ) -> None:
-        """Publish a user-visible message and mirror it into that channel's session."""
-        metadata = dict(msg.metadata or {})
-        record = record or bool(metadata.pop("_record_channel_delivery", False))
-        if metadata != (msg.metadata or {}):
-            msg = OutboundMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                content=msg.content,
-                reply_to=msg.reply_to,
-                media=msg.media,
-                metadata=metadata,
-                buttons=msg.buttons,
-            )
+    def _record_channel_delivery(msg: OutboundMessage, session_key: str | None = None) -> None:
+        """Mirror a delivered user-visible message into that channel's session."""
         if (
-            record
-            and msg.channel != "cli"
+            msg.channel != "cli"
             and msg.content.strip()
             and hasattr(session_manager, "get_or_create")
             and hasattr(session_manager, "save")
@@ -1025,7 +1010,43 @@ def _run_gateway(
                 extra["media"] = list(msg.media)
             session.add_message("assistant", msg.content, **extra)
             session_manager.save(session)
+
+    async def _deliver_to_channel(
+        msg: OutboundMessage,
+        *,
+        record: bool = False,
+        session_key: str | None = None,
+        wait_for_send: bool = False,
+    ) -> bool:
+        """Publish a user-visible message and optionally wait for channel delivery."""
+        metadata = dict(msg.metadata or {})
+        record = record or bool(metadata.pop("_record_channel_delivery", False))
+        wait_for_send = wait_for_send or bool(metadata.pop("_wait_for_channel_delivery", False))
+        if metadata != (msg.metadata or {}):
+            msg = OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=msg.content,
+                reply_to=msg.reply_to,
+                media=msg.media,
+                metadata=metadata,
+                buttons=msg.buttons,
+            )
+
+        if wait_for_send and msg.channel != "cli":
+            send_now = getattr(channels, "send_outbound_now", None)
+            if not callable(send_now):
+                raise RuntimeError("Channel delivery confirmation unavailable")
+            if not await send_now(msg):
+                raise RuntimeError(f"Channel delivery failed for {msg.channel}:{msg.chat_id}")
+            if record:
+                _record_channel_delivery(msg, session_key)
+            return True
+
+        if record:
+            _record_channel_delivery(msg, session_key)
         await bus.publish_outbound(msg)
+        return True
 
     message_tool = getattr(agent, "tools", {}).get("message")
     if isinstance(message_tool, MessageTool):
@@ -1062,8 +1083,10 @@ def _run_gateway(
             cron_token = cron_tool.set_cron_context(True)
 
         message_record_token = None
+        message_wait_token = None
         if isinstance(message_tool, MessageTool):
             message_record_token = message_tool.set_record_channel_delivery(True)
+            message_wait_token = message_tool.set_wait_for_channel_delivery(True)
 
         try:
             resp = await agent.process_direct(
@@ -1078,6 +1101,8 @@ def _run_gateway(
                 cron_tool.reset_cron_context(cron_token)
             if isinstance(message_tool, MessageTool) and message_record_token is not None:
                 message_tool.reset_record_channel_delivery(message_record_token)
+            if isinstance(message_tool, MessageTool) and message_wait_token is not None:
+                message_tool.reset_wait_for_channel_delivery(message_wait_token)
 
         return resp.content if resp else "", bool(
             isinstance(message_tool, MessageTool) and message_tool._sent_in_turn
@@ -1106,17 +1131,27 @@ def _run_gateway(
         status: str,
         skipped: bool = False,
         skip_reason: str | None = None,
+        completed: bool = True,
+        error: str | None = None,
     ) -> None:
         """Best-effort runtime marker so unchanged PLAN.md is not re-executed hourly."""
         now_ms = int(time.time() * 1000)
         next_state = dict(state)
-        next_state["lastPlanHash"] = plan_hash
+        if completed or skipped:
+            next_state["lastPlanHash"] = plan_hash
+        else:
+            next_state["lastAttemptedPlanHash"] = plan_hash
         next_state["lastStatus"] = status
         if skipped:
             next_state["lastSkippedAtMs"] = now_ms
             next_state["lastSkipReason"] = skip_reason or status
-        else:
+        elif completed:
             next_state["lastExecutedAtMs"] = now_ms
+            next_state.pop("lastError", None)
+        else:
+            next_state["lastFailedAtMs"] = now_ms
+            if error:
+                next_state["lastError"] = error
 
         try:
             save_daily_delivery_state(config.workspace_path, next_state)
@@ -1258,10 +1293,25 @@ def _run_gateway(
                 response, delivery_note, agent.provider, agent.model,
             )
             if should_notify:
-                await _deliver_to_channel(
-                    OutboundMessage(channel=channel, chat_id=chat_id, content=response),
-                    record=True,
-                )
+                try:
+                    await _deliver_to_channel(
+                        OutboundMessage(channel=channel, chat_id=chat_id, content=response),
+                        record=True,
+                        wait_for_send=True,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Daily delivery send failed; will retry while PLAN.md is unchanged: {}",
+                        exc,
+                    )
+                    _record_daily_delivery_state(
+                        delivery_state,
+                        plan_hash,
+                        status="send_failed",
+                        completed=False,
+                        error=str(exc),
+                    )
+                    return response
                 _record_daily_delivery_state(
                     delivery_state,
                     plan_hash,

@@ -77,6 +77,7 @@ BASE_INFO: dict[str, str] = {"channel_version": WEIXIN_CHANNEL_VERSION}
 
 # Session-expired error code
 ERRCODE_SESSION_EXPIRED = -14
+RET_CONTEXT_TOKEN_INVALID = -2
 SESSION_PAUSE_DURATION_S = 60 * 60
 
 # iLink context_token is observed to expire server-side after ~90-160s of
@@ -229,6 +230,18 @@ class WeixinChannel(BaseChannel):
                 "base_url": self.config.base_url,
             }
             state_file.write_text(json.dumps(data, ensure_ascii=False))
+
+    def _invalidate_context_token(self, chat_id: str, context_token: str = "") -> None:
+        """Drop a context token that the iLink server rejected."""
+        current = self._context_tokens.get(chat_id, "")
+        if not current:
+            return
+        if context_token and current != context_token:
+            return
+        self._context_tokens.pop(chat_id, None)
+        self._context_token_at.pop(chat_id, None)
+        self._typing_tickets.pop(chat_id, None)
+        self._save_state()
 
     def _clear_session_state(self) -> None:
         """Drop state that is only valid for a specific authenticated session."""
@@ -982,10 +995,18 @@ class WeixinChannel(BaseChannel):
             self.logger.warning("WeChat getconfig failed for {}: {}", chat_id, e)
             return context_token
 
-        if data.get("ret", 0) != 0:
+        ret = data.get("ret", 0)
+        if ret != 0:
+            if ret == RET_CONTEXT_TOKEN_INVALID:
+                self._invalidate_context_token(chat_id, context_token)
+                self.logger.warning(
+                    "WeChat getconfig rejected context_token for {}; waiting for next inbound message",
+                    chat_id,
+                )
+                return ""
             self.logger.warning(
                 "WeChat getconfig returned ret={} for {}: {}",
-                data.get("ret"),
+                ret,
                 chat_id,
                 data.get("errmsg", ""),
             )
@@ -1295,6 +1316,12 @@ class WeixinChannel(BaseChannel):
         ret = data.get("ret", 0)
         errcode = data.get("errcode", 0)
         if (ret is not None and ret != 0) or (errcode is not None and errcode != 0):
+            if ret == RET_CONTEXT_TOKEN_INVALID:
+                self._invalidate_context_token(to_user_id, context_token)
+                self.logger.warning(
+                    "WeChat sendmessage rejected context_token for {}; waiting for next inbound message",
+                    to_user_id,
+                )
             raise RuntimeError(
                 f"WeChat send text error (ret={ret}, errcode={errcode}): {data.get('errmsg', '')}"
             )
@@ -1446,6 +1473,12 @@ class WeixinChannel(BaseChannel):
         ret = data.get("ret", 0)
         errcode = data.get("errcode", 0)
         if (ret is not None and ret != 0) or (errcode is not None and errcode != 0):
+            if ret == RET_CONTEXT_TOKEN_INVALID:
+                self._invalidate_context_token(to_user_id, context_token)
+                self.logger.warning(
+                    "WeChat sendmessage rejected context_token for {}; waiting for next inbound message",
+                    to_user_id,
+                )
             raise RuntimeError(
                 f"WeChat send media error (ret={ret}, errcode={errcode}): {data.get('errmsg', '')}"
             )
