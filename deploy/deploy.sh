@@ -80,16 +80,13 @@ clone_or_pull() {
 }
 
 setup_venv() {
-    if [ ! -x "$VENV_DIR/bin/python" ]; then
+    if [ ! -x "$VENV_DIR/bin/python" ] || [ ! -x "$VENV_DIR/bin/pip" ]; then
         info "Creating Python venv..."
         python3 -m venv --clear "$VENV_DIR"
     fi
     info "Installing Python dependencies..."
-    (
-        source "$VENV_DIR/bin/activate"
-        pip install -q --upgrade pip
-        pip install -q -e "$APP_DIR[manager]"
-    )
+    "$VENV_DIR/bin/python" -m pip install -q --upgrade pip
+    "$VENV_DIR/bin/python" -m pip install -q -e "$APP_DIR[manager]"
     info "Python dependencies installed"
 }
 
