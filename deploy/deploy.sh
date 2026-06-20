@@ -33,11 +33,32 @@ info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
+install_python_venv() {
+    python3 -c "import ensurepip" 2>/dev/null && return 0
+
+    command -v apt-get >/dev/null || error "Python ensurepip is unavailable. Install the matching python3-venv package."
+
+    local py_version
+    py_version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+    info "Installing python${py_version}-venv..."
+    if [ "$(id -u)" -eq 0 ]; then
+        apt-get update
+        apt-get install -y "python${py_version}-venv"
+    else
+        command -v sudo >/dev/null || error "sudo is required to install python${py_version}-venv"
+        sudo apt-get update
+        sudo apt-get install -y "python${py_version}-venv"
+    fi
+
+    python3 -c "import ensurepip" 2>/dev/null \
+        || error "python${py_version}-venv installation did not provide ensurepip"
+}
+
 # --- Pre-flight checks ---
 check_prerequisites() {
     command -v git >/dev/null || error "git not found. Install: sudo apt install git"
     command -v python3 >/dev/null || error "python3 not found. Install: sudo apt install python3"
-    python3 -c "import venv" 2>/dev/null || error "python3-venv not found. Install: sudo apt install python3-venv"
+    install_python_venv
 
     # Check Python >= 3.11
     local py_version

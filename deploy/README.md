@@ -19,7 +19,7 @@ git clone --branch dev --single-branch https://github.com/vicoqi/nanobot.git ~/n
 ~/nanobot/deploy/deploy.sh --init
 ```
 
-自动完成：clone 代码 → 创建 venv → 安装依赖 → 使用内置 WebUI 静态资源 → 安装 systemd service。
+自动完成：clone 代码 → 安装缺失的 Python venv 系统包 → 创建 venv → 安装依赖 → 使用内置 WebUI 静态资源 → 安装 systemd service。
 
 部署脚本会在虚拟环境不完整时自动重建该环境；不会修改 `~/.nanobot/` 下的配置、数据库或工作区数据。
 
