@@ -6,7 +6,7 @@ nanobot Manager 自动化部署脚本，用于在 Ubuntu 服务器上拉取代�
 
 | 文件 | 用途 |
 |------|------|
-| `deploy.sh` | 在服务器拉取远程 `dev` 分支、构建 WebUI 并部署 |
+| `deploy.sh` | 在服务器拉取远程 `dev` 分支并部署内置 WebUI 静态资源 |
 | `nanobot-manager.service` | systemd 服务模板，由 deploy.sh 自动生成 |
 
 ## 首次部署
@@ -19,7 +19,7 @@ git clone --branch dev --single-branch https://github.com/vicoqi/nanobot.git ~/n
 ~/nanobot/deploy/deploy.sh --init
 ```
 
-自动完成：clone 代码 → 创建 venv → 安装依赖 → 构建前端 → 安装 systemd service。
+自动完成：clone 代码 → 创建 venv → 安装依赖 → 使用内置 WebUI 静态资源 → 安装 systemd service。
 
 ```bash
 # 3. 创建配置文件
@@ -55,6 +55,12 @@ cd ~/nanobot
 
 自动完成：拉取代码 → 更新依赖 → 重建前端 → 重启服务。之前运行的 agent 会自动恢复。
 
+`dev` 分支已包含 Manager WebUI 的编译产物，默认直接部署这些静态资源，不需要在服务器安装 Bun。需要从前端源码重建时执行：
+
+```bash
+BUILD_MANAGER_UI=1 ./deploy/deploy.sh
+```
+
 如果要更新指定分支，例如 `main`：
 
 ```bash
@@ -69,6 +75,7 @@ BRANCH=main ./deploy/deploy.sh
 | `REPO_URL` | Git 仓库地址；私有仓库可改用 SSH 地址 | `https://github.com/vicoqi/nanobot.git` |
 | `GITHUB_TOKEN` | GitHub PAT（仅私有 HTTPS 仓库需要） | - |
 | `BRANCH` | 部署的 Git 分支 | `dev` |
+| `BUILD_MANAGER_UI` | 设为 `1` 时从源码重建 Manager WebUI | `0` |
 
 ## 运维命令
 

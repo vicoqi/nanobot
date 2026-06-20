@@ -21,6 +21,7 @@ BRANCH="${BRANCH:-dev}"
 REPO="vicoqi/nanobot"
 REPO_URL="${REPO_URL:-https://github.com/${REPO}.git}"
 SERVICE_NAME="nanobot-manager"
+BUILD_MANAGER_UI="${BUILD_MANAGER_UI:-0}"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -43,6 +44,8 @@ check_prerequisites() {
     py_version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
     python3 -c "import sys; assert sys.version_info >= (3, 11)" 2>/dev/null \
         || error "Python >= 3.11 required, got ${py_version}"
+
+    [ "$BUILD_MANAGER_UI" = "1" ] || return 0
 
     if ! command -v bun >/dev/null; then
         info "bun not found, installing..."
@@ -91,6 +94,13 @@ setup_venv() {
 }
 
 build_frontend() {
+    if [ "$BUILD_MANAGER_UI" != "1" ]; then
+        [ -f "$APP_DIR/nanobot/manager/static/index.html" ] \
+            || error "Prebuilt Manager WebUI assets are missing. Re-run with BUILD_MANAGER_UI=1"
+        info "Using prebuilt Manager WebUI assets"
+        return 0
+    fi
+
     info "Building webui-manager frontend..."
     ( cd "$APP_DIR/webui-manager" && bun install --frozen-lockfile 2>/dev/null || bun install && bun run build )
     info "Frontend built -> nanobot/manager/static/"
@@ -177,6 +187,7 @@ main() {
             echo "  REPO_URL        Git repository URL (default: ${REPO_URL})"
             echo "  GITHUB_TOKEN    Optional GitHub PAT for private repository access"
             echo "  BRANCH          Git branch (default: dev)"
+            echo "  BUILD_MANAGER_UI Set to 1 to rebuild the Manager WebUI from source"
             ;;
         deploy|*)
             setup_auth
