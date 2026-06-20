@@ -6,17 +6,17 @@ nanobot Manager 自动化部署脚本，用于在 Ubuntu 服务器上拉取代�
 
 | 文件 | 用途 |
 |------|------|
-| `deploy.sh` | 部署脚本，支持首次初始化和后续更新 |
+| `deploy.sh` | 在服务器拉取远程 `dev` 分支、构建 WebUI 并部署 |
 | `nanobot-manager.service` | systemd 服务模板，由 deploy.sh 自动生成 |
 
 ## 首次部署
 
 ```bash
-# 1. 下载脚本到服务器
-scp -r deploy user@server:~/
+# 1. 拉取 dev 分支
+git clone --branch dev --single-branch https://github.com/vicoqi/nanobot.git ~/nanobot
 
 # 2. 运行初始化
-GITHUB_TOKEN=ghp_xxxxxxxxxxxx ./deploy/deploy.sh --init
+~/nanobot/deploy/deploy.sh --init
 ```
 
 自动完成：clone 代码 → 创建 venv → 安装依赖 → 构建前端 → 安装 systemd service。
@@ -50,7 +50,7 @@ sudo systemctl start nanobot-manager
 
 ```bash
 cd ~/nanobot
-GITHUB_TOKEN=ghp_xxxxxxxxxxxx ./deploy/deploy.sh
+./deploy/deploy.sh
 ```
 
 自动完成：拉取代码 → 更新依赖 → 重建前端 → 重启服务。之前运行的 agent 会自动恢复。
@@ -59,14 +59,15 @@ GITHUB_TOKEN=ghp_xxxxxxxxxxxx ./deploy/deploy.sh
 
 ```bash
 cd ~/nanobot
-GITHUB_TOKEN=ghp_xxx BRANCH=main ./deploy/deploy.sh
+BRANCH=main ./deploy/deploy.sh
 ```
 
 ## 环境变量
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `GITHUB_TOKEN` | GitHub PAT（必需，用于访问私有仓库） | - |
+| `REPO_URL` | Git 仓库地址；私有仓库可改用 SSH 地址 | `https://github.com/vicoqi/nanobot.git` |
+| `GITHUB_TOKEN` | GitHub PAT（仅私有 HTTPS 仓库需要） | - |
 | `BRANCH` | 部署的 Git 分支 | `dev` |
 
 ## 运维命令
