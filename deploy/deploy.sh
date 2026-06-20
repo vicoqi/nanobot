@@ -5,13 +5,13 @@ set -euo pipefail
 # nanobot Manager Deployment Script
 #
 # Usage:
-#   GITHUB_TOKEN=ghp_xxx ./deploy.sh           # deploy or update
-#   GITHUB_TOKEN=ghp_xxx ./deploy.sh --init     # first-time setup
+#   ./deploy.sh           # deploy or update origin/dev
+#   ./deploy.sh --init    # first-time setup
 #
 # Prerequisites (auto-checked):
 #   - git, python3 >=3.11 (with venv)
 #   - bun (auto-installed if missing)
-#   - GITHUB_TOKEN env var (for private repo access)
+#   - optional GITHUB_TOKEN only for private repository access
 # =============================================================================
 
 # --- Config ---
@@ -19,6 +19,7 @@ APP_DIR="$HOME/nanobot"
 VENV_DIR="$APP_DIR/venv"
 BRANCH="${BRANCH:-dev}"
 REPO="vicoqi/nanobot"
+REPO_URL="${REPO_URL:-https://github.com/${REPO}.git}"
 SERVICE_NAME="nanobot-manager"
 
 # --- Colors ---
@@ -53,18 +54,19 @@ check_prerequisites() {
 }
 
 setup_auth() {
-    if [ -z "${GITHUB_TOKEN:-}" ]; then
-        error "GITHUB_TOKEN env var is required.\n  Usage: GITHUB_TOKEN=ghp_xxx $0"
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+        REPO_URL="https://${GITHUB_TOKEN}@github.com/${REPO}.git"
     fi
-    REPO_URL="https://${GITHUB_TOKEN}@github.com/${REPO}.git"
 }
 
 # --- Core steps ---
 clone_or_pull() {
     if [ -d "$APP_DIR/.git" ]; then
         info "Pulling latest code from origin/${BRANCH}..."
-        git -C "$APP_DIR" fetch "$REPO_URL" "$BRANCH"
-        git -C "$APP_DIR" reset --hard "FETCH_HEAD"
+        git -C "$APP_DIR" remote set-url origin "$REPO_URL"
+        git -C "$APP_DIR" fetch --prune origin "$BRANCH"
+        git -C "$APP_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
+        git -C "$APP_DIR" reset --hard "origin/$BRANCH"
         info "Code updated to $(git -C "$APP_DIR" rev-parse --short HEAD)"
     else
         info "Cloning repository..."
@@ -99,9 +101,8 @@ restart_service() {
         info "Restarting ${SERVICE_NAME}..."
         sudo systemctl restart "$SERVICE_NAME"
     else
-        warn "${SERVICE_NAME} is not running. Start it manually:"
-        echo "  sudo systemctl start ${SERVICE_NAME}"
-        return
+        info "Starting ${SERVICE_NAME}..."
+        sudo systemctl start "$SERVICE_NAME"
     fi
     sleep 3
     if systemctl is-active --quiet "$SERVICE_NAME"; then
@@ -145,11 +146,15 @@ init_server() {
     sudo systemctl daemon-reload
     sudo systemctl enable "$SERVICE_NAME"
 
+    if [ -f "$HOME/.nanobot/manager-config.json" ]; then
+        restart_service
+    fi
+
     info ""
     info "=== Init complete! ==="
     info "Next steps:"
     echo "  1. Create config: nano $HOME/.nanobot/manager-config.json"
-    echo "  2. Start service: sudo systemctl start ${SERVICE_NAME}"
+    echo "  2. Deploy: $0"
     echo "  3. Test: curl http://localhost:8080/admin/"
 }
 
@@ -165,11 +170,12 @@ main() {
             ;;
         --help|help|-h)
             echo "Usage:"
-            echo "  GITHUB_TOKEN=xxx $0          # Deploy (pull, build, restart)"
-            echo "  GITHUB_TOKEN=xxx $0 --init   # First-time server setup"
+            echo "  $0          # Deploy (pull, build, restart)"
+            echo "  $0 --init   # First-time server setup"
             echo ""
             echo "Config (env vars):"
-            echo "  GITHUB_TOKEN    GitHub PAT for private repo (required)"
+            echo "  REPO_URL        Git repository URL (default: ${REPO_URL})"
+            echo "  GITHUB_TOKEN    Optional GitHub PAT for private repository access"
             echo "  BRANCH          Git branch (default: dev)"
             ;;
         deploy|*)
