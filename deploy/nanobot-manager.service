@@ -1,6 +1,8 @@
 [Unit]
 Description=nanobot Manager - Multi-Agent Management API
 After=network.target
+StartLimitBurst=5
+StartLimitIntervalSec=60
 
 [Service]
 Type=simple
@@ -9,8 +11,6 @@ WorkingDirectory=%HOME%/nanobot
 ExecStart=%HOME%/nanobot/venv/bin/nanobot manager
 Restart=on-failure
 RestartSec=5
-StartLimitBurst=5
-StartLimitIntervalSec=60
 
 Environment=PYTHONUNBUFFERED=1
 Environment=HOME=%HOME%
