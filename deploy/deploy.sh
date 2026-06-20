@@ -80,9 +80,9 @@ clone_or_pull() {
 }
 
 setup_venv() {
-    if [ ! -d "$VENV_DIR" ]; then
+    if [ ! -x "$VENV_DIR/bin/python" ]; then
         info "Creating Python venv..."
-        python3 -m venv "$VENV_DIR"
+        python3 -m venv --clear "$VENV_DIR"
     fi
     info "Installing Python dependencies..."
     (
