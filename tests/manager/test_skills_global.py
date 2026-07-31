@@ -147,3 +147,60 @@ def test_uninstall_global_tolerates_broken_symlink(tmp_path: Path) -> None:
 
     assert cleaned == 1
     assert not broken.exists()
+
+
+# --- uninstall_global_skill path-traversal guard (Fix Round 1) --------------
+
+
+@pytest.mark.parametrize(
+    "bad_name",
+    [
+        "..",          # headline traversal: Path(global_dir)/".." == data_dir
+        "/etc",        # absolute-path override after Path join
+        "a/b",         # nested path escape
+        "A-Bad",       # uppercase rejected by whitelist
+        "a_b",         # underscore is not in [a-z0-9-]
+        "",            # empty
+        ".hidden",     # leading dot
+        "trailing-",   # trailing hyphen
+        "-leading",    # leading hyphen
+    ],
+)
+def test_uninstall_global_rejects_invalid_skill_name(
+    tmp_path: Path, bad_name: str
+) -> None:
+    # Regardless of filesystem state, an invalid name must raise before any
+    # rmtree ever runs — this is what blocks path traversal.
+    with pytest.raises(FileNotFoundError, match="Invalid skill name"):
+        uninstall_global_skill(
+            bad_name, tmp_path / "manager-skills", tmp_path / "workspaces"
+        )
+
+
+def test_uninstall_global_does_not_delete_parent_on_traversal(tmp_path: Path) -> None:
+    # The headline attack: ``DELETE /api/admin/skills/..`` would resolve
+    # ``Path(global_dir) / ".."`` to the data_dir itself and rmtree it
+    # (database, config, every workspace). The guard must fire before that.
+    data_dir = tmp_path / "data"
+    global_dir = data_dir / "manager-skills"
+    workspaces = data_dir / "workspaces"
+    global_dir.mkdir(parents=True)
+    workspaces.mkdir()
+    (global_dir / "real-skill").mkdir()
+    (global_dir / "real-skill" / "SKILL.md").write_text("real", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError):
+        uninstall_global_skill("..", global_dir, workspaces)
+
+    # data_dir and its contents survived — nothing was rmtree'd.
+    assert data_dir.exists()
+    assert (global_dir / "real-skill" / "SKILL.md").exists()
+
+
+def test_uninstall_global_rejects_non_string(tmp_path: Path) -> None:
+    # A None / int skill_name must be rejected, not coerced.
+    for bad in (None, 123, ["a", "b"]):
+        with pytest.raises(FileNotFoundError, match="Invalid skill name"):
+            uninstall_global_skill(
+                bad, tmp_path / "manager-skills", tmp_path / "workspaces"  # type: ignore[arg-type]
+            )

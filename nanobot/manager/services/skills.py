@@ -14,6 +14,12 @@ _STRIP_FRONTMATTER = re.compile(
     r"^---\s*\r?\n(.*?)\r?\n---\s*\r?\n?",
     re.DOTALL,
 )
+# Whitelist for skill directory names. Matches the marketplace service's
+# ``_SKILL_RE`` (skills_marketplace.py): lowercase alphanumerics joined by
+# single hyphens. Rejecting anything else (``..``, ``a/b``, ``A-Bad``, ...)
+# blocks path traversal in ``uninstall_global_skill`` before it ever reaches
+# ``shutil.rmtree``.
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 def global_skills_dir(config) -> Path:
@@ -101,20 +107,33 @@ def uninstall_global_skill(
     the matching symlink before removing the global repo copy.
 
     Returns the number of workspace symlinks that were removed.
+
+    Raises ``FileNotFoundError`` if ``skill_name`` is not a strict whitelist
+    match — this is a security guard: without it, ``DELETE /api/admin/skills/..``
+    would resolve ``Path(global_dir) / ".."`` and let ``shutil.rmtree`` walk and
+    delete the entire ``data_dir`` (database, config, every workspace).
     """
+    if not isinstance(skill_name, str) or not _SKILL_NAME_RE.fullmatch(skill_name):
+        raise FileNotFoundError(f"Invalid skill name: {skill_name!r}")
+
     cleaned = 0
-    # ① Walk every agent workspace and unlink dangling symlinks.
+    # ① Walk every agent workspace and unlink dangling symlinks. The iterdir
+    # walk is best-effort: an OSError mid-iteration (race, permission, broken
+    # NFS mount) must not prevent step ② from removing the global repo copy.
     if Path(workspaces_dir).is_dir():
-        for ws in Path(workspaces_dir).iterdir():
-            link = ws / "skills" / skill_name
-            if link.is_symlink():
-                try:
-                    link.unlink()
-                    cleaned += 1
-                except OSError:
-                    # Race or permission issue — skip but keep going so the
-                    # global repo copy still gets removed.
-                    pass
+        try:
+            for ws in Path(workspaces_dir).iterdir():
+                link = ws / "skills" / skill_name
+                if link.is_symlink():
+                    try:
+                        link.unlink()
+                        cleaned += 1
+                    except OSError:
+                        # Race or permission issue — skip but keep going so the
+                        # global repo copy still gets removed.
+                        pass
+        except OSError:
+            pass
     # ② Remove the global repo directory itself.
     target = Path(global_dir) / skill_name
     if target.exists():

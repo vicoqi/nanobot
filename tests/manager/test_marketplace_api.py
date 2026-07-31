@@ -298,3 +298,36 @@ class TestUninstallSkill:
             )
         assert resp.status_code == 200
         assert resp.json() == {"success": True, "cleanedWorkspaces": 0}
+
+    async def test_uninstall_rejects_path_traversal(self, client: AsyncClient):
+        # ``DELETE /api/admin/skills/..`` must NOT reach shutil.rmtree on
+        # data_dir. The URL-encoded form (``%2E%2E``) bypasses framework path
+        # normalization and reaches the handler bound to ``skill_name='..'``,
+        # so the service-level whitelist is what actually stops it — mapped to
+        # 404 here. No mock: the real guard runs end-to-end.
+        resp = await client.delete(
+            "/api/admin/skills/%2E%2E",
+            headers=await _admin_headers(client),
+        )
+        assert resp.status_code == 404
+        assert "Invalid skill name" in resp.json()["detail"]
+
+    async def test_uninstall_rejects_literal_traversal(self, client: AsyncClient):
+        # The literal (un-encoded) ``..`` is collapsed by framework routing and
+        # never reaches the handler — defense in depth. Either way, it must not
+        # succeed (i.e. must not be 200).
+        resp = await client.delete(
+            "/api/admin/skills/..",
+            headers=await _admin_headers(client),
+        )
+        assert resp.status_code != 200
+
+    async def test_uninstall_rejects_invalid_names(self, client: AsyncClient):
+        # Uppercase and other whitelist misses reach the handler (single path
+        # segment) and fail validation → 404 via the endpoint's error mapping.
+        for bad in ("A-Bad", "a_b"):
+            resp = await client.delete(
+                f"/api/admin/skills/{bad}",
+                headers=await _admin_headers(client),
+            )
+            assert resp.status_code == 404, f"{bad}: {resp.status_code} {resp.text}"

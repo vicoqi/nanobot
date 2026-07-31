@@ -106,7 +106,11 @@ async def uninstall(skill_name: str, _admin: dict = Depends(get_current_admin)):
     matching symlink before deleting the global repo directory.
     """
     config = get_config()
-    cleaned = uninstall_global_skill(
-        skill_name, global_skills_dir(config), config.workspaces_dir
-    )
+    try:
+        cleaned = uninstall_global_skill(
+            skill_name, global_skills_dir(config), config.workspaces_dir
+        )
+    except FileNotFoundError as exc:
+        # Service-level whitelist rejected the name (path-traversal guard).
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"success": True, "cleanedWorkspaces": cleaned}
