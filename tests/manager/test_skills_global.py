@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from nanobot.manager.config import ManagerConfig
 from nanobot.manager.services.skills import (
     get_installed_skill_names,
@@ -45,7 +47,9 @@ def test_install_symlinks_from_global_to_workspace(tmp_path: Path) -> None:
     installed = get_installed_skill_names(workspace)
     assert "alpha" in installed
     # Symlink must point at the global repo copy
-    assert (workspace / "skills" / "alpha").is_symlink()
+    link = workspace / "skills" / "alpha"
+    assert link.is_symlink()
+    assert link.resolve() == (global_dir / "alpha").resolve()
 
 
 def test_install_missing_skill_raises(tmp_path: Path) -> None:
@@ -53,12 +57,18 @@ def test_install_missing_skill_raises(tmp_path: Path) -> None:
     global_dir.mkdir(parents=True)
     workspace = tmp_path / "ws"
     (workspace / "skills").mkdir(parents=True)
-    try:
+    with pytest.raises(FileNotFoundError, match="nope"):
         install_skill("nope", workspace, global_dir)
-    except FileNotFoundError as e:
-        assert "nope" in str(e)
-    else:
-        raise AssertionError("Expected FileNotFoundError")
+
+
+def test_install_twice_raises_file_exists(tmp_path: Path) -> None:
+    global_dir = tmp_path / "manager-skills"
+    workspace = tmp_path / "ws"
+    (workspace / "skills").mkdir(parents=True)
+    _make_skill(global_dir, "alpha")
+    install_skill("alpha", workspace, global_dir)
+    with pytest.raises(FileExistsError, match="already installed"):
+        install_skill("alpha", workspace, global_dir)
 
 
 def test_uninstall_removes_symlink(tmp_path: Path) -> None:
