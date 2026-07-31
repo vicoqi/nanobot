@@ -14,7 +14,10 @@ _STRIP_FRONTMATTER = re.compile(
     re.DOTALL,
 )
 
-MANAGER_SKILLS_DIR = Path(__file__).parent.parent.parent / "manager-skills"
+
+def global_skills_dir(config) -> Path:
+    """Resolve the global manager-skills repo path from a ManagerConfig."""
+    return Path(config.data_dir) / "manager-skills"
 
 
 def _parse_frontmatter(content: str) -> dict | None:
@@ -30,12 +33,14 @@ def _parse_frontmatter(content: str) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def scan_available_skills() -> list[dict]:
+def scan_available_skills(global_dir: Path) -> list[dict]:
+    """Scan a global skills repo directory and return skill metadata."""
+    global_dir = Path(global_dir)
     skills: list[dict] = []
-    if not MANAGER_SKILLS_DIR.is_dir():
+    if not global_dir.is_dir():
         return skills
 
-    for skill_dir in sorted(MANAGER_SKILLS_DIR.iterdir()):
+    for skill_dir in sorted(global_dir.iterdir()):
         if not skill_dir.is_dir():
             continue
         skill_file = skill_dir / "SKILL.md"
@@ -62,8 +67,9 @@ def get_installed_skill_names(workspace_path: str) -> set[str]:
     }
 
 
-def install_skill(skill_name: str, workspace_path: str) -> None:
-    src = MANAGER_SKILLS_DIR / skill_name
+def install_skill(skill_name: str, workspace_path: str, global_dir: Path) -> None:
+    """Symlink a skill from the global repo into the workspace's skills dir."""
+    src = Path(global_dir) / skill_name
     if not src.is_dir():
         raise FileNotFoundError(f"Skill not found: {skill_name}")
 

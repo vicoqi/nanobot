@@ -33,6 +33,7 @@ from nanobot.manager.services.config_builder import (
 )
 from nanobot.manager.services.skills import (
     get_installed_skill_names,
+    global_skills_dir,
     install_skill,
     scan_available_skills,
     uninstall_skill,
@@ -265,7 +266,8 @@ async def list_available_skills(
     db: Database = Depends(get_db),
 ):
     agent = _check_owner(await db.get_agent(agent_id), _get_user_id(payload))
-    available = scan_available_skills()
+    gdir = global_skills_dir(get_config())
+    available = scan_available_skills(gdir)
     installed = get_installed_skill_names(agent.workspace_path)
     return {
         "skills": [
@@ -284,8 +286,9 @@ async def install_skill_endpoint(
     pm: AgentProcessManager = Depends(get_process_manager),
 ):
     agent = _check_owner(await db.get_agent(agent_id), _get_user_id(payload))
+    gdir = global_skills_dir(get_config())
     try:
-        install_skill(req.skill_name, agent.workspace_path)
+        install_skill(req.skill_name, agent.workspace_path, gdir)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except FileExistsError as e:
