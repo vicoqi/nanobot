@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from pathlib import Path
 
 import yaml
@@ -88,3 +89,39 @@ def uninstall_skill(skill_name: str, workspace_path: str) -> None:
         raise FileNotFoundError(f"Skill not installed: {skill_name}")
     dst.unlink()
     logger.info("Uninstalled skill '{}' from {}", skill_name, workspace_path)
+
+
+def uninstall_global_skill(
+    skill_name: str, global_dir: Path, workspaces_dir: Path
+) -> int:
+    """Remove a skill from the global repo and cascade-clean agent workspaces.
+
+    When a global skill is removed, any symlinks pointing at it from agent
+    workspaces would be left dangling. This walks every workspace and unlinks
+    the matching symlink before removing the global repo copy.
+
+    Returns the number of workspace symlinks that were removed.
+    """
+    cleaned = 0
+    # ① Walk every agent workspace and unlink dangling symlinks.
+    if Path(workspaces_dir).is_dir():
+        for ws in Path(workspaces_dir).iterdir():
+            link = ws / "skills" / skill_name
+            if link.is_symlink():
+                try:
+                    link.unlink()
+                    cleaned += 1
+                except OSError:
+                    # Race or permission issue — skip but keep going so the
+                    # global repo copy still gets removed.
+                    pass
+    # ② Remove the global repo directory itself.
+    target = Path(global_dir) / skill_name
+    if target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+    logger.info(
+        "Uninstalled global skill '{}', cleaned {} workspace symlinks",
+        skill_name,
+        cleaned,
+    )
+    return cleaned

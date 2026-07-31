@@ -1,8 +1,8 @@
 """Admin API endpoints for the agent skills marketplace.
 
-Exposes search/trending/install against the global manager-skills repo via the
-service layer added in Tasks 2/4/5. All endpoints require an admin JWT via
-``get_current_admin``. The DELETE uninstall endpoint lives in Task 7.
+Exposes search/trending/install/uninstall against the global manager-skills
+repo via the service layer. All endpoints require an admin JWT via
+``get_current_admin``.
 """
 
 from __future__ import annotations
@@ -13,7 +13,11 @@ from pydantic.alias_generators import to_camel
 
 from nanobot.manager.app import get_config
 from nanobot.manager.auth import get_current_admin
-from nanobot.manager.services.skills import global_skills_dir, scan_available_skills
+from nanobot.manager.services.skills import (
+    global_skills_dir,
+    scan_available_skills,
+    uninstall_global_skill,
+)
 from nanobot.manager.services.skills_marketplace import (
     SkillsMarketplaceError,
     install_marketplace_skill,
@@ -93,4 +97,16 @@ async def installed(_admin: dict = Depends(get_current_admin)):
     return {"skills": scan_available_skills(global_skills_dir(config))}
 
 
-# DELETE /{name} (uninstall) is implemented in Task 7.
+@router.delete("/{skill_name}")
+async def uninstall(skill_name: str, _admin: dict = Depends(get_current_admin)):
+    """Remove a skill from the global repo and cascade-clean agent workspaces.
+
+    Decision 5a: rather than leaving dangling symlinks across agent workspaces
+    when a global skill is removed, we walk every workspace and unlink the
+    matching symlink before deleting the global repo directory.
+    """
+    config = get_config()
+    cleaned = uninstall_global_skill(
+        skill_name, global_skills_dir(config), config.workspaces_dir
+    )
+    return {"success": True, "cleanedWorkspaces": cleaned}

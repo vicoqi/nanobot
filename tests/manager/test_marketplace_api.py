@@ -250,3 +250,51 @@ class TestInstalledSkills:
             )
         assert resp.status_code == 200
         assert resp.json() == {"skills": scanned}
+
+
+class TestUninstallSkill:
+    """DELETE /api/admin/skills/{skill_name} (Task 7)."""
+
+    async def test_uninstall_requires_admin(self, client: AsyncClient):
+        resp = await client.delete("/api/admin/skills/alpha")
+        assert resp.status_code == 401
+
+    async def test_uninstall_cascades_and_returns_cleaned_count(
+        self, client: AsyncClient
+    ):
+        captured: dict = {}
+
+        def fake(skill_name, global_dir, workspaces_dir):
+            captured.update(
+                skill_name=skill_name,
+                global_dir=global_dir,
+                workspaces_dir=workspaces_dir,
+            )
+            return 3
+
+        with patch(
+            "nanobot.manager.api.marketplace.uninstall_global_skill",
+            new=fake,
+        ):
+            resp = await client.delete(
+                "/api/admin/skills/alpha",
+                headers=await _admin_headers(client),
+            )
+        assert resp.status_code == 200
+        assert resp.json() == {"success": True, "cleanedWorkspaces": 3}
+        # Service called with the configured global skills dir + workspaces dir
+        assert captured["skill_name"] == "alpha"
+        assert captured["global_dir"].name == "manager-skills"
+        assert captured["workspaces_dir"].name == "workspaces"
+
+    async def test_uninstall_zero_when_nothing_installed(self, client: AsyncClient):
+        with patch(
+            "nanobot.manager.api.marketplace.uninstall_global_skill",
+            return_value=0,
+        ):
+            resp = await client.delete(
+                "/api/admin/skills/ghost",
+                headers=await _admin_headers(client),
+            )
+        assert resp.status_code == 200
+        assert resp.json() == {"success": True, "cleanedWorkspaces": 0}

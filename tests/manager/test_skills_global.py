@@ -12,6 +12,7 @@ from nanobot.manager.services.skills import (
     global_skills_dir,
     install_skill,
     scan_available_skills,
+    uninstall_global_skill,
     uninstall_skill,
 )
 
@@ -85,3 +86,64 @@ def test_global_skills_dir_uses_config(tmp_path: Path, monkeypatch) -> None:
     cfg = ManagerConfig()
     monkeypatch.setattr(cfg, "_config_path", tmp_path / "manager-config.json")
     assert global_skills_dir(cfg) == tmp_path / "manager-skills"
+
+
+# --- uninstall_global_skill (Task 7) ----------------------------------------
+
+
+def test_uninstall_global_cleans_all_workspaces(tmp_path: Path) -> None:
+    global_dir = tmp_path / "manager-skills"
+    workspaces = tmp_path / "workspaces"
+    _make_skill(global_dir, "alpha")
+    # Two agent workspaces both symlinked alpha — these would go stale once
+    # the global repo copy is removed.
+    for ws in ("agent-1", "agent-2"):
+        ws_dir = workspaces / ws
+        (ws_dir / "skills").mkdir(parents=True)
+        (ws_dir / "skills" / "alpha").symlink_to((global_dir / "alpha").resolve())
+
+    cleaned = uninstall_global_skill("alpha", global_dir, workspaces)
+
+    assert cleaned == 2
+    assert not (global_dir / "alpha").exists()
+    assert not (workspaces / "agent-1" / "skills" / "alpha").exists()
+    assert not (workspaces / "agent-2" / "skills" / "alpha").exists()
+
+
+def test_uninstall_global_tolerates_missing(tmp_path: Path) -> None:
+    # Nothing exists — neither global repo entry nor any workspace symlinks.
+    cleaned = uninstall_global_skill("nope", tmp_path, tmp_path)
+    assert cleaned == 0
+
+
+def test_uninstall_global_skips_non_symlink_dirs(tmp_path: Path) -> None:
+    # A real directory under skills/ (not a symlink) must not be touched.
+    global_dir = tmp_path / "manager-skills"
+    workspaces = tmp_path / "workspaces"
+    _make_skill(global_dir, "alpha")
+    ws_dir = workspaces / "agent-1"
+    regular = ws_dir / "skills" / "alpha"
+    regular.mkdir(parents=True)
+    (regular / "SKILL.md").write_text("real", encoding="utf-8")
+
+    cleaned = uninstall_global_skill("alpha", global_dir, workspaces)
+
+    assert cleaned == 0
+    # Regular dir survived; global repo copy still removed.
+    assert regular.exists()
+    assert not (global_dir / "alpha").exists()
+
+
+def test_uninstall_global_tolerates_broken_symlink(tmp_path: Path) -> None:
+    # A dangling (already-broken) symlink should still count and be unlinked.
+    global_dir = tmp_path / "manager-skills"
+    workspaces = tmp_path / "workspaces"
+    ws_dir = workspaces / "agent-1"
+    (ws_dir / "skills").mkdir(parents=True)
+    broken = ws_dir / "skills" / "alpha"
+    broken.symlink_to(tmp_path / "does-not-exist")
+
+    cleaned = uninstall_global_skill("alpha", global_dir, workspaces)
+
+    assert cleaned == 1
+    assert not broken.exists()
