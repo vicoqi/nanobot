@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import re
 import socket
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from typing import Any, cast
 from urllib.parse import urlparse
+
+import httpx
 
 _BLOCKED_NETWORKS = [
     ipaddress.ip_network("0.0.0.0/8"),
@@ -157,3 +161,182 @@ def _is_allowed_loopback_target(
     with suppress(ValueError):
         return ipaddress.ip_address(hostname).is_loopback
     return False
+
+
+# ---------------------------------------------------------------------------
+# Ported from upstream HKUDS/nanobot — DNS-pinned HTTP transport (anti-SSRF).
+#
+# These symbols were missing from this fork. They are appended verbatim
+# (adapted only to reuse helpers already present above) so that downstream
+# code can construct an ``httpx.AsyncClient`` whose every request is pinned
+# to the IPs validated at request time. Existing helpers above
+# (``_BLOCKED_NETWORKS``, ``_normalize_addr``, ``_is_private``,
+# ``_is_allowed_loopback_target``) are reused unchanged.
+# ---------------------------------------------------------------------------
+
+
+def is_loopback_host(host: str) -> bool:
+    """Return whether a bind target is explicitly limited to loopback."""
+    normalized = host.strip().rstrip(".").lower()
+    if normalized == "localhost":
+        return True
+    if normalized.startswith("[") and normalized.endswith("]"):
+        normalized = normalized[1:-1]
+    with suppress(ValueError):
+        return ipaddress.ip_address(normalized).is_loopback
+    return False
+
+
+def resolve_url_target(
+    url: str,
+    *,
+    allow_loopback: bool = False,
+    trust_remote_dns: bool = False,
+) -> tuple[bool, str, tuple[str, ...]]:
+    """Validate a URL is safe to fetch: scheme, hostname, and resolved IPs.
+
+    ``allow_loopback`` is intentionally narrow: it only permits literal
+    loopback hosts (localhost, 127.0.0.0/8, ::1) when every resolved address is
+    loopback. It does not allow RFC1918, link-local, metadata, or public DNS
+    names that happen to resolve to loopback.
+
+    ``trust_remote_dns`` accepts ordinary hostnames unavailable to local DNS.
+    This is only safe when a user-configured trusted proxy owns final DNS
+    resolution and network egress. Localhost names and private/internal IP
+    literals remain blocked.
+
+    Returns (ok, error_message, resolved_ips).  When ok is True,
+    resolved_ips contains the public IPs that were validated for this URL, or
+    is empty when an unresolved hostname is delegated to a trusted proxy.
+    """
+    try:
+        p = urlparse(url)
+    except Exception as e:
+        return False, str(e), ()
+
+    if p.scheme not in ("http", "https"):
+        return False, f"Only http/https allowed, got '{p.scheme or 'none'}'", ()
+    if not p.netloc:
+        return False, "Missing domain", ()
+
+    hostname = p.hostname
+    if not hostname:
+        return False, "Missing hostname", ()
+
+    try:
+        infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror:
+        if not trust_remote_dns:
+            return False, f"Cannot resolve hostname: {hostname}", ()
+
+        normalized_hostname = hostname.rstrip(".").lower()
+        if normalized_hostname == "localhost" or normalized_hostname.endswith(".localhost"):
+            return False, f"Blocked local/internal hostname: {hostname}", ()
+
+        try:
+            literal_addr = ipaddress.ip_address(normalized_hostname)
+        except ValueError:
+            return True, "", ()
+        if _is_private(literal_addr):
+            return False, f"Blocked private/internal address: {literal_addr}", ()
+        return True, "", (str(_normalize_addr(literal_addr)),)
+
+    addrs: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        addrs.append(addr)
+    if allow_loopback and _is_allowed_loopback_target(hostname, addrs):
+        return True, "", tuple(dict.fromkeys(str(_normalize_addr(addr)) for addr in addrs))
+    for addr in addrs:
+        if _is_private(addr):
+            return False, f"Blocked: {hostname} resolves to private/internal address {addr}", ()
+
+    return True, "", tuple(dict.fromkeys(str(_normalize_addr(addr)) for addr in addrs))
+
+
+@contextmanager
+def pin_resolved_url_dns(url: str, resolved_ips: tuple[str, ...]):
+    """Pin DNS lookups for the URL hostname to previously validated IPs.
+
+    This temporarily overrides process-global resolver state. Do not use it
+    directly across awaits unless the caller serializes access; prefer
+    PinnedDNSAsyncTransport for HTTP requests.
+    """
+    try:
+        hostname = urlparse(url).hostname
+    except Exception:
+        hostname = None
+    if not hostname or not resolved_ips:
+        yield
+        return
+
+    pinned_host = hostname.rstrip(".").lower()
+    original_getaddrinfo = socket.getaddrinfo
+
+    def _getaddrinfo(
+        host: Any,
+        port: Any,
+        family: int = 0,
+        type: int = 0,  # noqa: A002
+        proto: int = 0,
+        flags: int = 0,
+    ) -> list[Any]:
+        if str(host).rstrip(".").lower() != pinned_host:
+            return original_getaddrinfo(host, port, family, type, proto, flags)
+        infos: list[Any] = []
+        for ip in resolved_ips:
+            addr = ipaddress.ip_address(ip)
+            addr_family = socket.AF_INET6 if addr.version == 6 else socket.AF_INET
+            if family not in (0, socket.AF_UNSPEC, addr_family):
+                continue
+            sockaddr = (ip, port or 0, 0, 0) if addr_family == socket.AF_INET6 else (ip, port or 0)
+            infos.append((addr_family, type or socket.SOCK_STREAM, proto, "", sockaddr))
+        return infos
+
+    socket.getaddrinfo = cast(Any, _getaddrinfo)
+    try:
+        yield
+    finally:
+        socket.getaddrinfo = original_getaddrinfo
+
+
+class UnsafeHTTPRequestError(httpx.RequestError):
+    """Raised when an outgoing request is rejected by URL safety validation."""
+
+
+class PinnedDNSAsyncTransport(httpx.AsyncBaseTransport):
+    """HTTPX transport that pins each request to the IPs validated for its URL.
+
+    On every ``handle_async_request`` call the URL is re-resolved and checked
+    against the SSRF blocklist. Unsafe targets raise
+    ``UnsafeHTTPRequestError`` and never reach the underlying transport. Safe
+    targets have their hostname pinned to the validated IPs for the duration
+    of the request so a TOCTOU switch cannot redirect egress to an internal
+    address.
+    """
+
+    _resolver_lock = asyncio.Lock()
+
+    def __init__(
+        self,
+        *,
+        allow_loopback: bool = False,
+        inner: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._allow_loopback = allow_loopback
+        self._inner = inner or httpx.AsyncHTTPTransport()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        ok, error, resolved_ips = resolve_url_target(url, allow_loopback=self._allow_loopback)
+        if not ok:
+            raise UnsafeHTTPRequestError(error, request=request)
+        async with self._resolver_lock:
+            with pin_resolved_url_dns(url, resolved_ips):
+                return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
