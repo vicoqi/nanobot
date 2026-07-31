@@ -599,8 +599,10 @@ async def _install_skills_sh_skill(
 
     The CLI's ``--agent openclaw --copy`` adapter writes into ``<cwd>/skills/
     <skill_id>`` (confirmed by the Task 1 spike). We run it inside a
-    ``TemporaryDirectory`` and ``shutil.move`` the result into ``global_dir``
-    so no partial output ever lands in a workspace path.
+    ``TemporaryDirectory`` scoped to ``global_dir`` (same filesystem) and
+    ``os.replace`` the result into place so no partial output ever lands in a
+    workspace path and a concurrent install of the same skill is atomically
+    overwritten rather than nesting.
     """
     if not _SOURCE_RE.fullmatch(source):
         raise SkillsMarketplaceError("invalid skill source")
@@ -653,7 +655,9 @@ async def _install_skills_sh_skill(
         "--yes",
     )
 
-    with tempfile.TemporaryDirectory(prefix=".skills-sh-install-") as temporary:
+    # Stage inside ``repo`` so the final ``os.replace`` is an atomic
+    # same-filesystem rename (matches the SkillHub install path).
+    with tempfile.TemporaryDirectory(prefix=".skills-sh-install-", dir=repo) as temporary:
         cwd = Path(temporary)
         process = await asyncio.create_subprocess_exec(
             *command,
@@ -687,13 +691,10 @@ async def _install_skills_sh_skill(
                 "installer completed but the skill was not found",
                 status=502,
             )
-        if target.exists():
-            # Lost a race with a concurrent install of the same skill.
-            raise SkillsMarketplaceError(
-                "target skill directory already exists",
-                status=409,
-            )
-        shutil.move(str(staged), str(target))
+        # Atomic same-filesystem rename: if two admins install the same skill
+        # concurrently the second rename cleanly overwrites the first (same
+        # skill, different fetch) instead of nesting ``target/<skill_id>/``.
+        os.replace(str(staged), str(target))
 
     if not (target / "SKILL.md").exists():
         raise SkillsMarketplaceError(
