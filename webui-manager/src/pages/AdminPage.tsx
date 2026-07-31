@@ -16,6 +16,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import StatusBadge from "@/components/StatusBadge";
+import SkillsDiscover from "@/components/SkillsDiscover";
+import SkillsInstalled from "@/components/SkillsInstalled";
 
 function formatRelativeTime(iso: string, t: (key: string, params?: Record<string, string | number>) => string): string {
   const diff = Math.max(0, Date.now() - new Date(iso).getTime());
@@ -36,7 +38,8 @@ export default function AdminPage() {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
-  const [tab, setTab] = useState<"agents" | "users">("agents");
+  const [tab, setTab] = useState<"agents" | "users" | "skills">("agents");
+  const [skillsTab, setSkillsTab] = useState<"discover" | "installed">("discover");
   const [togglingId, setTogglingId] = useState<number | null>(null);
 
   async function handleLogin(e: React.FormEvent) {
@@ -145,6 +148,9 @@ export default function AdminPage() {
         <Button className="w-full sm:w-auto" variant={tab === "users" ? "default" : "outline"} size="sm" onClick={() => setTab("users")}>
           {t("admin.tabUsers")}
         </Button>
+        <Button className="w-full sm:w-auto" variant={tab === "skills" ? "default" : "outline"} size="sm" onClick={() => setTab("skills")}>
+          📦 {t("admin.tabSkills")}
+        </Button>
       </div>
 
       <Separator className="mb-4" />
@@ -216,6 +222,32 @@ export default function AdminPage() {
             ))}
           </tbody>
         </table>
+        </div>
+      )}
+
+      {tab === "skills" && (
+        <div>
+          <div className="mb-4 grid grid-cols-2 gap-2 sm:flex">
+            <Button
+              className="w-full sm:w-auto"
+              variant={skillsTab === "discover" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setSkillsTab("discover")}
+            >
+              {t("admin.skillsTabDiscover")}
+            </Button>
+            <Button
+              className="w-full sm:w-auto"
+              variant={skillsTab === "installed" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setSkillsTab("installed")}
+            >
+              {t("admin.skillsTabInstalled")}
+            </Button>
+          </div>
+
+          {skillsTab === "discover" && <SkillsDiscover />}
+          {skillsTab === "installed" && <SkillsInstalled />}
         </div>
       )}
     </div>
