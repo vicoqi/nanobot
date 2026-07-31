@@ -42,7 +42,13 @@ async def search(
     _admin: dict = Depends(get_current_admin),
 ):
     config = get_config()
-    return await search_marketplace_skills(q, global_skills_dir(config), provider=source)
+    try:
+        return await search_marketplace_skills(q, global_skills_dir(config), provider=source)
+    except SkillsMarketplaceError as exc:
+        raise HTTPException(
+            status_code=getattr(exc, "status", None) or 400,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get("/marketplace/trending")
@@ -51,7 +57,13 @@ async def trending(
     _admin: dict = Depends(get_current_admin),
 ):
     config = get_config()
-    return await trending_marketplace_skills(global_skills_dir(config), provider=source)
+    try:
+        return await trending_marketplace_skills(global_skills_dir(config), provider=source)
+    except SkillsMarketplaceError as exc:
+        raise HTTPException(
+            status_code=getattr(exc, "status", None) or 400,
+            detail=str(exc),
+        ) from exc
 
 
 @router.post("/marketplace/install")
@@ -69,7 +81,10 @@ async def install(
             version=req.version,
         )
     except SkillsMarketplaceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=getattr(exc, "status", None) or 400,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get("")

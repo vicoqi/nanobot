@@ -87,6 +87,25 @@ class TestMarketplaceSearch:
         assert resp.status_code == 200
         assert captured == {"query": "bar", "provider": "skillhub"}
 
+    async def test_search_defaults_source_to_all(self, client: AsyncClient):
+        # Omitting the `source` query param must fall through to "all".
+        captured: dict = {}
+
+        async def fake(query, global_dir, *, provider="all"):
+            captured.update(provider=provider)
+            return {"skills": [], "provider": provider}
+
+        with patch(
+            "nanobot.manager.api.marketplace.search_marketplace_skills",
+            new=fake,
+        ):
+            resp = await client.get(
+                "/api/admin/skills/marketplace/search?q=foo",
+                headers=await _admin_headers(client),
+            )
+        assert resp.status_code == 200
+        assert captured == {"provider": "all"}
+
 
 class TestMarketplaceTrending:
     async def test_trending_requires_admin(self, client: AsyncClient):
@@ -105,6 +124,24 @@ class TestMarketplaceTrending:
             )
         assert resp.status_code == 200
         assert resp.json() == payload
+
+    async def test_trending_passes_source(self, client: AsyncClient):
+        captured: dict = {}
+
+        async def fake(global_dir, *, provider="all"):
+            captured.update(provider=provider)
+            return {"skills": [], "provider": provider}
+
+        with patch(
+            "nanobot.manager.api.marketplace.trending_marketplace_skills",
+            new=fake,
+        ):
+            resp = await client.get(
+                "/api/admin/skills/marketplace/trending?source=skillhub",
+                headers=await _admin_headers(client),
+            )
+        assert resp.status_code == 200
+        assert captured == {"provider": "skillhub"}
 
 
 class TestMarketplaceInstall:
