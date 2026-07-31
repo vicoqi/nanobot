@@ -53,6 +53,16 @@ const en = {
     stopping: "Stopping...",
     starting: "Starting...",
     creating: "Creating...",
+    skillsDiscover: {
+      searchPlaceholder: "Search marketplace skills...",
+      sourceAll: "All",
+      sourceSkillsSh: "skills.sh",
+      sourceSkillHub: "SkillHub",
+      trending: "Trending",
+      results: "Results",
+      empty: "No results",
+      installed: "Installed",
+    },
   },
   agent: {
     settings: "Settings",

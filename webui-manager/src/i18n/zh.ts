@@ -53,6 +53,16 @@ const zh = {
     stopping: "停止中...",
     starting: "启动中...",
     creating: "创建中...",
+    skillsDiscover: {
+      searchPlaceholder: "搜索市场技能...",
+      sourceAll: "全部",
+      sourceSkillsSh: "skills.sh",
+      sourceSkillHub: "SkillHub",
+      trending: "热门",
+      results: "搜索结果",
+      empty: "暂无结果",
+      installed: "已安装",
+    },
   },
   agent: {
     settings: "设置",
