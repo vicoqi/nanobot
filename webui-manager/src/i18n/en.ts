@@ -13,6 +13,7 @@ const en = {
     install: "Install",
     uninstall: "Uninstall",
     installing: "Installing...",
+    uninstalling: "Uninstalling...",
     actions: "Actions",
   },
   dashboard: {
@@ -62,6 +63,15 @@ const en = {
       results: "Results",
       empty: "No results",
       installed: "Installed",
+    },
+    skillsInstalled: {
+      title: "Installed Skills",
+      subtitle: "Skills in the global repo shared by all agents.",
+      confirm: "Uninstall this skill? References in affected agents will be cleaned up too.",
+      empty: "No skills installed yet. Discover skills from the marketplace.",
+      cleaned: "Uninstalled. Cleaned references in {n} agent(s).",
+      noAgents: "Uninstalled. No agents were affected.",
+      failed: "Uninstall failed.",
     },
   },
   agent: {

@@ -13,6 +13,7 @@ const zh = {
     install: "安装",
     uninstall: "卸载",
     installing: "安装中...",
+    uninstalling: "卸载中...",
     actions: "操作",
   },
   dashboard: {
@@ -62,6 +63,15 @@ const zh = {
       results: "搜索结果",
       empty: "暂无结果",
       installed: "已安装",
+    },
+    skillsInstalled: {
+      title: "已安装技能",
+      subtitle: "全局仓库中供所有 Agent 共用的技能。",
+      confirm: "确定卸载此技能？将同时清理相关 Agent 的引用。",
+      empty: "尚未安装任何技能，去市场发现新技能。",
+      cleaned: "已卸载，并清理了 {n} 个 Agent 的引用。",
+      noAgents: "已卸载，没有受影响的 Agent。",
+      failed: "卸载失败。",
     },
   },
   agent: {
