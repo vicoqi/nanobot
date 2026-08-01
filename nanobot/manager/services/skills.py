@@ -76,6 +76,12 @@ def get_installed_skill_names(workspace_path: str) -> set[str]:
 
 def install_skill(skill_name: str, workspace_path: str, global_dir: Path) -> None:
     """Symlink a skill from the global repo into the workspace's skills dir."""
+    # Validate ``skill_name`` with the same whitelist as
+    # ``uninstall_global_skill``: without it, a name containing ``/`` or ``..``
+    # could symlink an arbitrary source/destination under the workspace.
+    if not isinstance(skill_name, str) or not _SKILL_NAME_RE.fullmatch(skill_name):
+        raise FileNotFoundError(f"Invalid skill name: {skill_name!r}")
+
     src = Path(global_dir) / skill_name
     if not src.is_dir():
         raise FileNotFoundError(f"Skill not found: {skill_name}")
