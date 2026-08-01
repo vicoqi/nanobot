@@ -96,6 +96,13 @@ def install_skill(skill_name: str, workspace_path: str, global_dir: Path) -> Non
 
 
 def uninstall_skill(skill_name: str, workspace_path: str) -> None:
+    # Validate ``skill_name`` with the same whitelist as ``install_skill``
+    # and ``uninstall_global_skill``: without it, a traversal name such as
+    # ``../../manager.db`` would resolve outside the workspace and ``unlink()``
+    # could delete an arbitrary file (e.g. the manager database).
+    if not isinstance(skill_name, str) or not _SKILL_NAME_RE.fullmatch(skill_name):
+        raise FileNotFoundError(f"Invalid skill name: {skill_name!r}")
+
     dst = Path(workspace_path) / "skills" / skill_name
     if not dst.exists():
         raise FileNotFoundError(f"Skill not installed: {skill_name}")

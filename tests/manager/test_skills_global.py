@@ -82,6 +82,30 @@ def test_uninstall_removes_symlink(tmp_path: Path) -> None:
     assert not (workspace / "skills" / "alpha").exists()
 
 
+def test_uninstall_rejects_traversal_name(tmp_path: Path) -> None:
+    """A traversal ``skill_name`` must not resolve outside the workspace.
+
+    Regression for the authenticated path-traversal issue (Codex P1): without
+    name validation, ``uninstall_skill("../../manager.db", ws)`` would
+    ``unlink()`` a file outside the workspace (e.g. the manager database).
+    """
+    workspace = tmp_path / "ws"
+    (workspace / "skills").mkdir(parents=True)
+    sentinel = tmp_path / "manager.db"
+    sentinel.write_text("important", encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        uninstall_skill("../../manager.db", workspace)
+    assert sentinel.read_text(encoding="utf-8") == "important"
+
+
+def test_uninstall_rejects_invalid_name(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    (workspace / "skills").mkdir(parents=True)
+    for bad in ("../etc", "A-Bad", "a/b", "UPPER", ""):
+        with pytest.raises(FileNotFoundError):
+            uninstall_skill(bad, workspace)
+
+
 def test_global_skills_dir_uses_config(tmp_path: Path, monkeypatch) -> None:
     cfg = ManagerConfig()
     monkeypatch.setattr(cfg, "_config_path", tmp_path / "manager-config.json")
