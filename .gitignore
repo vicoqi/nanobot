@@ -20,7 +20,7 @@ webui/node_modules/
 webui/dist/
 webui/coverage/
 webui/.vite/
-webui-manager/node_modules/
+webui-manager/node_modules
 webui-manager/.vite/
 *.tsbuildinfo
 
