@@ -19,6 +19,7 @@ import {
   skillDescription,
   skillSourceLabel,
   isSkillInstalled,
+  installSkillId,
   shouldShowTrending,
   debounce,
 } from "../lib/skillsDiscover";
@@ -34,6 +35,30 @@ function makeSkill(over: Partial<MarketplaceSkill> = {}): MarketplaceSkill {
     ...over,
   };
 }
+
+describe("installSkillId", () => {
+  it("returns the bare slug, not the composite id (avoids 'invalid skill name')", () => {
+    const skill = makeSkill({
+      id: "anthropics/courses/pdf",
+      skill_id: "pdf",
+      source: "anthropics/courses",
+      provider: "skills_sh",
+    });
+    expect(installSkillId(skill)).toBe("pdf");
+  });
+
+  it("falls back to the trailing id segment when skill_id is missing", () => {
+    expect(
+      installSkillId(makeSkill({ id: "skillhub:finance", skill_id: undefined })),
+    ).toBe("finance");
+    expect(
+      installSkillId(
+        makeSkill({ id: "owner/repo/my-skill", skill_id: undefined }),
+      ),
+    ).toBe("my-skill");
+  });
+});
+
 
 describe("SOURCE_FILTERS", () => {
   it("exposes all/skills_sh/skillhub in fixed order with stable label keys", () => {
