@@ -39,7 +39,7 @@ def test_scan_returns_empty_when_missing(tmp_path: Path) -> None:
     assert result == []
 
 
-def test_install_symlinks_from_global_to_workspace(tmp_path: Path) -> None:
+def test_install_copies_real_files_into_workspace(tmp_path: Path) -> None:
     global_dir = tmp_path / "manager-skills"
     workspace = tmp_path / "ws"
     (workspace / "skills").mkdir(parents=True)
@@ -47,10 +47,15 @@ def test_install_symlinks_from_global_to_workspace(tmp_path: Path) -> None:
     install_skill("alpha", workspace, global_dir)
     installed = get_installed_skill_names(workspace)
     assert "alpha" in installed
-    # Symlink must point at the global repo copy
-    link = workspace / "skills" / "alpha"
-    assert link.is_symlink()
-    assert link.resolve() == (global_dir / "alpha").resolve()
+    # Must be a real directory with real files inside the workspace — NOT a
+    # symlink to the global repo. A symlink resolves outside the workspace and
+    # the agent refuses to read through it (marketplace skill access bug).
+    skill_dir = workspace / "skills" / "alpha"
+    assert not skill_dir.is_symlink()
+    assert skill_dir.is_dir()
+    assert (skill_dir / "SKILL.md").is_file()
+    # The copy must resolve inside the workspace (no symlink escape).
+    assert workspace.resolve() in skill_dir.resolve().parents
 
 
 def test_install_missing_skill_raises(tmp_path: Path) -> None:
@@ -72,7 +77,7 @@ def test_install_twice_raises_file_exists(tmp_path: Path) -> None:
         install_skill("alpha", workspace, global_dir)
 
 
-def test_uninstall_removes_symlink(tmp_path: Path) -> None:
+def test_uninstall_removes_installed_copy(tmp_path: Path) -> None:
     global_dir = tmp_path / "manager-skills"
     workspace = tmp_path / "ws"
     (workspace / "skills").mkdir(parents=True)
@@ -80,6 +85,20 @@ def test_uninstall_removes_symlink(tmp_path: Path) -> None:
     install_skill("alpha", workspace, global_dir)
     uninstall_skill("alpha", workspace)
     assert not (workspace / "skills" / "alpha").exists()
+
+
+def test_uninstall_removes_legacy_symlink(tmp_path: Path) -> None:
+    """uninstall_skill must still remove legacy symlink installs (pre-copy era)."""
+    global_dir = tmp_path / "manager-skills"
+    workspace = tmp_path / "ws"
+    skills_dir = workspace / "skills"
+    skills_dir.mkdir(parents=True)
+    src = global_dir / "alpha"
+    src.mkdir(parents=True)
+    (src / "SKILL.md").write_text("---\ndescription: d\n---\n", encoding="utf-8")
+    (skills_dir / "alpha").symlink_to(src.resolve())
+    uninstall_skill("alpha", workspace)
+    assert not (skills_dir / "alpha").exists()
 
 
 def test_uninstall_rejects_traversal_name(tmp_path: Path) -> None:
