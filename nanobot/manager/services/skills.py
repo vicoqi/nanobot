@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 from pathlib import Path
@@ -75,10 +74,16 @@ def get_installed_skill_names(workspace_path: str) -> set[str]:
 
 
 def install_skill(skill_name: str, workspace_path: str, global_dir: Path) -> None:
-    """Symlink a skill from the global repo into the workspace's skills dir."""
+    """Copy a skill from the global repo into the workspace's skills dir.
+
+    The skill is physically copied (not symlinked) so it lives as real files
+    inside the workspace. A symlink to the global repo resolves outside the
+    workspace, and the agent refuses to read files through such a symlink —
+    copying keeps everything within the workspace boundary.
+    """
     # Validate ``skill_name`` with the same whitelist as
     # ``uninstall_global_skill``: without it, a name containing ``/`` or ``..``
-    # could symlink an arbitrary source/destination under the workspace.
+    # could escape the workspace via the copy destination.
     if not isinstance(skill_name, str) or not _SKILL_NAME_RE.fullmatch(skill_name):
         raise FileNotFoundError(f"Invalid skill name: {skill_name!r}")
 
@@ -87,11 +92,10 @@ def install_skill(skill_name: str, workspace_path: str, global_dir: Path) -> Non
         raise FileNotFoundError(f"Skill not found: {skill_name}")
 
     dst = Path(workspace_path) / "skills" / skill_name
+    if dst.exists() or dst.is_symlink():
+        raise FileExistsError(f"Skill already installed: {skill_name}")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.symlink(src.resolve(), dst)
-    except FileExistsError:
-        raise FileExistsError(f"Skill already installed: {skill_name}") from None
+    shutil.copytree(src, dst)
     logger.info("Installed skill '{}' to {}", skill_name, workspace_path)
 
 
@@ -104,9 +108,14 @@ def uninstall_skill(skill_name: str, workspace_path: str) -> None:
         raise FileNotFoundError(f"Invalid skill name: {skill_name!r}")
 
     dst = Path(workspace_path) / "skills" / skill_name
-    if not dst.exists():
+    # Handle both the current copy-installed dirs and any legacy symlinks from
+    # before install_skill switched from symlink to copy.
+    if dst.is_symlink():
+        dst.unlink()
+    elif dst.is_dir():
+        shutil.rmtree(dst)
+    else:
         raise FileNotFoundError(f"Skill not installed: {skill_name}")
-    dst.unlink()
     logger.info("Uninstalled skill '{}' from {}", skill_name, workspace_path)
 
 
@@ -137,6 +146,11 @@ def uninstall_global_skill(
         try:
             for ws in Path(workspaces_dir).iterdir():
                 link = ws / "skills" / skill_name
+                # Only clean dangling symlinks: a symlink target disappears once
+                # the global repo copy is removed, leaving a broken link. Real
+                # directories are either copy-installed (self-contained — the
+                # agent can still use them, like the seeded daily-* skills) or
+                # agent-authored, so they must not be touched here.
                 if link.is_symlink():
                     try:
                         link.unlink()
