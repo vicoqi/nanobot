@@ -691,10 +691,26 @@ async def _install_skills_sh_skill(
                 "installer completed but the skill was not found",
                 status=502,
             )
-        # Atomic same-filesystem rename: if two admins install the same skill
-        # concurrently the second rename cleanly overwrites the first (same
-        # skill, different fetch) instead of nesting ``target/<skill_id>/``.
-        os.replace(str(staged), str(target))
+        # Atomic same-filesystem rename. ``os.replace`` overwrites an empty
+        # target but raises ``ENOTEMPTY`` for a non-empty directory, so if a
+        # concurrent install of the same skill populated ``target`` between
+        # the ``target.exists()`` check above and now, the rename fails. Treat
+        # that race as already-installed (the skill is there, just fetched by
+        # the other admin) instead of bubbling up an unhandled 500.
+        try:
+            os.replace(str(staged), str(target))
+        except OSError as exc:
+            if target.is_dir() and (target / "SKILL.md").exists():
+                return {
+                    "installed": True,
+                    "already_installed": True,
+                    "name": skill_id,
+                }
+            raise SkillsMarketplaceError(
+                "skill installation failed: could not finalize "
+                f"{skill_id!r}",
+                status=502,
+            ) from exc
 
     if not (target / "SKILL.md").exists():
         raise SkillsMarketplaceError(

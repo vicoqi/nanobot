@@ -882,6 +882,54 @@ async def test_install_skills_sh_moves_to_global(tmp_path: Path) -> None:
     }
 
 
+async def test_install_skills_sh_concurrent_race_reports_already_installed(
+    tmp_path: Path,
+) -> None:
+    """A concurrent install populating ``target`` mid-flight is reported as
+    already-installed, not an unhandled ``ENOTEMPTY`` 500.
+
+    Regression for the ``os.replace`` race: ``os.replace`` raises
+    ``ENOTEMPTY`` for a non-empty target directory, so if another admin
+    installed the same skill between the ``target.exists()`` check and the
+    final rename, the loser must not crash with HTTP 500.
+    """
+    global_dir = tmp_path / "manager-skills"
+    skill_id = "good-skill"
+    body = "---\ndescription: d\n---\n"
+    target = global_dir / skill_id
+
+    async def _exec(*_args, cwd=None, **_kwargs):
+        # The CLI writes the staged copy ...
+        staged = Path(cwd) / "skills" / skill_id
+        staged.mkdir(parents=True, exist_ok=True)
+        (staged / "SKILL.md").write_text(body, encoding="utf-8")
+        # ... while a concurrent winner has just populated the real target.
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text(body, encoding="utf-8")
+        proc = MagicMock()
+        proc.returncode = 0
+
+        async def _communicate():
+            return (body.encode("utf-8"), b"")
+
+        proc.communicate = _communicate
+        proc.kill = MagicMock()
+        return proc
+
+    with (
+        patch.object(sm.asyncio, "create_subprocess_exec", side_effect=_exec),
+        patch.object(sm.shutil, "which", return_value="/usr/bin/npx"),
+    ):
+        result = await install_marketplace_skill(
+            "owner/repo", skill_id, global_dir, provider="skills_sh"
+        )
+    assert result == {
+        "installed": True,
+        "already_installed": True,
+        "name": skill_id,
+    }
+
+
 async def test_install_skills_sh_returncode_failure(tmp_path: Path) -> None:
     """A non-zero CLI exit surfaces a marketplace error carrying output tail."""
     global_dir = tmp_path / "manager-skills"
