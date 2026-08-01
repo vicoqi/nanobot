@@ -11,6 +11,7 @@ import {
   skillDescription,
   skillSourceLabel,
   isSkillInstalled,
+  installSkillId,
   shouldShowTrending,
   debounce,
   type SourceValue,
@@ -122,7 +123,7 @@ export default function SkillsDiscover() {
     try {
       const installSource = pickInstallSource(skill);
       const res = await installMarketplaceSkill(
-        skill.id,
+        installSkillId(skill),
         installSource,
         skill.provider ?? "skills_sh",
       );

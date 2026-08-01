@@ -58,6 +58,27 @@ export function pickInstallSource(skill: MarketplaceSkill): string {
 }
 
 /**
+ * Resolve the skill id (slug) to pass to ``installMarketplaceSkill``.
+ *
+ * The marketplace row carries a composite ``id`` (``source/slug`` for
+ * skills.sh, ``skillhub:slug`` for SkillHub) used for React keys and URLs,
+ * alongside a bare ``skill_id`` (the slug itself). The install endpoint
+ * validates the slug against a strict kebab-case regex and rejects anything
+ * containing ``/`` or ``:``, so we must send ``skill_id`` — sending the
+ * composite ``id`` fails with HTTP 400 "invalid skill name".
+ *
+ * Falls back to the trailing segment of ``id`` only if ``skill_id`` is absent
+ * (defensive — the backend always emits it today).
+ */
+export function installSkillId(skill: MarketplaceSkill): string {
+  const slug =
+    typeof skill.skill_id === "string" ? skill.skill_id.trim() : "";
+  if (slug) return slug;
+  const raw = typeof skill.id === "string" ? skill.id : "";
+  return raw.split(/[/ :]/).filter(Boolean).pop() ?? raw;
+}
+
+/**
  * Description shown on a result card. Not every provider emits one, so we
  * fall back to the skill name rather than rendering an empty paragraph
  * (which would look like a broken card).
