@@ -77,10 +77,12 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     from nanobot.manager.api.admin import router as admin_router
     from nanobot.manager.api.agents import router as agents_router
     from nanobot.manager.api.auth import router as auth_router
+    from nanobot.manager.api.marketplace import router as marketplace_router
 
     app.include_router(auth_router)
     app.include_router(agents_router)
     app.include_router(admin_router)
+    app.include_router(marketplace_router)
 
     # Serve frontend static files in production
     static_dir = Path(__file__).parent / "static"

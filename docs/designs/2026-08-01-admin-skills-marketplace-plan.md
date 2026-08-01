@@ -787,11 +787,11 @@
 
 ---
 
-## Spike 结论（Task 1 产出填入）
+## Spike 结论（Task 1 — 2026-08-01 实测）
 
-- skills.sh CLI 包名/命令：_（待填）_
-- 目标目录支持：_A / B / C（待填）_
-- skills.sh 安装策略（Task 5）：_（待填）_
+- skills.sh CLI 包名/命令：`npx --yes skills@latest add <source> --skill <id> --agent openclaw --copy --yes`
+- 目标目录支持：**方案 B**（CLI 无 `--target`；以 `cwd` 控制，实测装到 `<cwd>/skills/<id>/`；`--agent openclaw` 强制落 cwd 不落 user-global）
+- skills.sh 安装策略（Task 5）：以 `cwd=临时目录` 跑 CLI → 装到 `tmp/skills/<id>/` → `shutil.move(tmp/skills/<id>, global_dir/<id>)`
 
 ---
 

@@ -3,7 +3,11 @@ import { getToken, clearToken, getAdminToken, clearAdminToken } from "./auth";
 const BASE = "";
 
 async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const isAdmin = path.startsWith("/admin");
+  // Match both the legacy admin routes ("/admin/...") and the newer
+  // marketplace routes mounted under "/api/admin/...". Without the second
+  // branch, admin JWT would never be attached to the skills-marketplace
+  // calls and every request would 401.
+  const isAdmin = path.startsWith("/admin") || path.startsWith("/api/admin");
   const token = isAdmin ? getAdminToken() : getToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -218,5 +222,113 @@ export async function uninstallSkill(id: number, skillName: string): Promise<{ s
   return request(`/api/agents/${id}/skills/uninstall`, {
     method: "POST",
     body: JSON.stringify({ skillName }),
+  });
+}
+
+// -- Admin: Skills Marketplace --
+//
+// Types mirror the live backend contract in
+// ``nanobot/manager/api/marketplace.py`` + ``services/skills_marketplace.py``.
+// Note the marketplace list endpoints wrap results under ``skills`` (not
+// ``results``) and ``install`` returns ``{installed, already_installed, name}``
+// rather than ``{success}`` — the UI (Discover/Installed views) reads these
+// exact shapes.
+
+export interface MarketplaceSkill {
+  id: string;
+  /** Raw skill name as used on the upstream provider (skills.sh / SkillHub). */
+  skill_id?: string;
+  name: string;
+  /** Not emitted by every provider; UI falls back to ``name``. */
+  description?: string;
+  source: string;
+  provider?: string;
+  installs?: number;
+  url?: string;
+  installed: boolean;
+  install_supported?: boolean;
+  /** Ranking metric, e.g. ``installs_24h`` for trending rows. */
+  metric?: string;
+  rank?: number;
+}
+
+export interface InstalledSkill {
+  name: string;
+  description: string;
+}
+
+export interface MarketplaceSearchResponse {
+  query: string;
+  skills: MarketplaceSkill[];
+  provider: string;
+  install_supported: boolean;
+}
+
+export interface MarketplaceTrendingResponse {
+  skills: MarketplaceSkill[];
+  period: string;
+  provider: string;
+  install_supported: boolean;
+}
+
+export interface MarketplaceInstallResponse {
+  installed: boolean;
+  already_installed: boolean;
+  name: string;
+  provider?: string;
+}
+
+export interface UninstallSkillResponse {
+  success: boolean;
+  cleanedWorkspaces: number;
+}
+
+/** Search the public skills marketplace (skills.sh + SkillHub). */
+export async function searchMarketplace(
+  q: string,
+  source = "all"
+): Promise<MarketplaceSearchResponse> {
+  const params = new URLSearchParams({ q, source });
+  return request(`/api/admin/skills/marketplace/search?${params.toString()}`);
+}
+
+/** Fetch the provider-aware marketplace trending leaderboard. */
+export async function trendingMarketplace(
+  source = "all"
+): Promise<MarketplaceTrendingResponse> {
+  const params = new URLSearchParams({ source });
+  return request(`/api/admin/skills/marketplace/trending?${params.toString()}`);
+}
+
+/**
+ * Install a marketplace skill into the global manager-skills repo.
+ * Body keys are camelCase to match the backend's pydantic ``to_camel`` alias
+ * (``skillId`` on the wire, ``skill_id`` in Python).
+ */
+export async function installMarketplaceSkill(
+  skillId: string,
+  source: string,
+  provider = "skills_sh",
+  version = ""
+): Promise<MarketplaceInstallResponse> {
+  return request("/api/admin/skills/marketplace/install", {
+    method: "POST",
+    body: JSON.stringify({ skillId, source, provider, version }),
+  });
+}
+
+/** List skills installed in the global repo. */
+export async function listInstalledSkills(): Promise<{ skills: InstalledSkill[] }> {
+  return request("/api/admin/skills");
+}
+
+/**
+ * Remove a skill from the global repo and cascade-clean agent workspaces.
+ * ``name`` is a path segment, so it is encoded with ``encodeURIComponent``
+ * (not folded into URLSearchParams).
+ */
+export async function uninstallGlobalSkill(name: string): Promise<UninstallSkillResponse> {
+  return request(`/api/admin/skills/${encodeURIComponent(name)}`, {
+    method: "DELETE",
   });
 }
